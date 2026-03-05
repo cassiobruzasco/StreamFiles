@@ -1,0 +1,3559 @@
+diff --git a/app-argentina/build.gradle.kts b/app-argentina/build.gradle.kts
+index 3952fc4..f3707ce 100644
+--- a/app-argentina/build.gradle.kts
++++ b/app-argentina/build.gradle.kts
+@@ -56,7 +56,6 @@ dependencies {
+     } else {
+         // MODO DESENVOLVIMENTO
+         implementation(project(":sdk"))
+-        implementation(project(":sdk:payment:argentina"))
+     }
+ 
+     implementation(platform(libs.androidx.compose.bom))
+diff --git a/app-brazil/build.gradle.kts b/app-brazil/build.gradle.kts
+index 31baa23..b696aea 100644
+--- a/app-brazil/build.gradle.kts
++++ b/app-brazil/build.gradle.kts
+@@ -57,7 +57,6 @@ dependencies {
+     } else {
+         // MODO DESENVOLVIMENTO
+         implementation(project(":sdk"))
+-        implementation(project(":sdk:payment:brazil"))
+     }
+ 
+     implementation(platform(libs.androidx.compose.bom))
+@@ -68,6 +67,7 @@ dependencies {
+     implementation(libs.androidx.compose.ui.graphics)
+     implementation(libs.androidx.compose.ui.tooling.preview)
+     implementation(libs.androidx.compose.material3)
++    implementation(libs.navigation.compose)
+     testImplementation(libs.junit)
+     androidTestImplementation(libs.androidx.junit)
+     androidTestImplementation(libs.androidx.espresso.core)
+diff --git a/app-brazil/src/main/java/com/pagonxt/brazil/MainActivity.kt b/app-brazil/src/main/java/com/pagonxt/brazil/MainActivity.kt
+index 927cd49..00e8f9c 100644
+--- a/app-brazil/src/main/java/com/pagonxt/brazil/MainActivity.kt
++++ b/app-brazil/src/main/java/com/pagonxt/brazil/MainActivity.kt
+@@ -5,64 +5,61 @@ import androidx.activity.ComponentActivity
+ import androidx.activity.compose.setContent
+ import androidx.activity.enableEdgeToEdge
+ import androidx.compose.material3.MaterialTheme
+-import androidx.compose.ui.graphics.Color
+-import com.pagonxt.brazil.hooks.AfterCardReadHook
+-import com.pagonxt.brazil.hooks.BeforeCardReadingHook
++import androidx.navigation.compose.rememberNavController
++import com.pagonxt.brazil.customizations.PartnerInterstitialRoute
+ import com.pagonxt.brazil.interstitial.DeveloperInterstitialGuide
+-import com.pagonxt.sdk.ApoloSdk
+-import com.pagonxt.sdk.core.flow.sale.SaleFlowState
+-import com.pagonxt.sdk.core.uxal.ColorToken
+-import com.pagonxt.sdk.core.uxal.TextToken
+-import com.pagonxt.sdk.payment.sale.BrSaleFlowState
+-import com.pagonxt.sdk.payment.sale.BrSaleMethodEnum
++import com.pagonxt.sdk.core.presentation.navigation.SdkFlowInterceptor
++import com.pagonxt.sdk.core.presentation.navigation.SdkRoute
++import com.pagonxt.sdk.core.presentation.navigation.SdkUiNavigationConfig
++import com.pagonxt.sdk.uxal.brazil.navigation.BrSaleNavGraph
++import com.pagonxt.sdk.uxal.brazil.navigation.BrSdkRoutes
+ 
+ class MainActivity : ComponentActivity() {
+     override fun onCreate(savedInstanceState: Bundle?) {
+         super.onCreate(savedInstanceState)
+-        ApoloSdk.Builder(this)
+-            .useSale()
+-//            .useSale {
+-//                com.pagonxt.brazil.customizations.CustomSaleContentBuilder()
+-//            }
+-            .addFlowInterstitial<SaleFlowState>(
+-                { state ->
+-                    when (state) {
+-                        is BrSaleFlowState.ProductSelection -> {
+-                            state.method == BrSaleMethodEnum.CREDIT_CARD && state.amount > 0
+-                        }
++        enableEdgeToEdge()
++
++        // 1. Initialize Koin Not here, but inside the Application class
++        // startKoin {
++        //     androidContext(this@MainActivity)
++        //     modules(brazilPaymentModule, brazilHalModule, etc)
++        // }
+ 
+-                        else -> false
++        // 2. Define the UI Interceptor Rules (The Slot API Configuration)
++        val sdkConfig = SdkUiNavigationConfig(
++            interceptor = object : SdkFlowInterceptor {
++                override fun overrideNextRoute(
++                    currentRoute: SdkRoute,
++                    defaultNextRoute: SdkRoute
++                ): SdkRoute {
++                    // Business Rule: Hijack the flow after Amount Selection and show the Partner Interstitial
++                    if (currentRoute is BrSdkRoutes.AmountAndProduct && defaultNextRoute is BrSdkRoutes.CardReading) {
++                        return PartnerInterstitialRoute
+                     }
+-                },
+-                { state, proceed ->
+-                    DeveloperInterstitialGuide (
++                    return defaultNextRoute
++                }
++            },
++            customScreens = mapOf(
++                PartnerInterstitialRoute::class to { resumeFlow ->
++                    // Render our custom screen
++                    DeveloperInterstitialGuide(
+                         onProceed = {
+-                            proceed()
+-                        },
+-                        onDismiss = {
+-                            proceed()
++                            // Give control back to the SDK, telling it to go to Card Reading
++                            resumeFlow(BrSdkRoutes.CardReading)
+                         }
+                     )
+                 }
+             )
+-            .preHookAction<BrSaleFlowState.CardCapture.Presentation>{
+-                BeforeCardReadingHook()
+-            }
+-            .postHookAction<BrSaleFlowState.CardCapture.Success>{
+-                AfterCardReadHook()
+-            }
+-            // Exemplo de personalização programática de tokens de texto e cor
+-            .customize {
+-                setText(TextToken("uxal_br_sale_title"), "Venda Brasil")
+-                setText(TextToken("custom_sale_title"), "Venda Parceiro")
+-                setColor(ColorToken("uxal_color_primary"), Color(0xFFE91E63))
+-            }
+-            .build()
++        )
+ 
+-        enableEdgeToEdge()
+         setContent {
+             MaterialTheme {
+-                LauncherHome()
++                val navController = rememberNavController()
++
++                BrSaleNavGraph(
++                    navController = navController,
++                    sdkConfig = sdkConfig
++                )
+             }
+         }
+     }
+diff --git a/app-brazil/src/main/java/com/pagonxt/brazil/customizations/CustomAppRoutes.kt b/app-brazil/src/main/java/com/pagonxt/brazil/customizations/CustomAppRoutes.kt
+index ea937be..28602d1 100644
+--- a/app-brazil/src/main/java/com/pagonxt/brazil/customizations/CustomAppRoutes.kt
++++ b/app-brazil/src/main/java/com/pagonxt/brazil/customizations/CustomAppRoutes.kt
+@@ -1,2 +1,7 @@
+ package com.pagonxt.brazil.customizations
+ 
++import com.pagonxt.sdk.core.presentation.navigation.SdkRoute
++import kotlinx.serialization.Serializable
++
++@Serializable
++data object PartnerInterstitialRoute : SdkRoute
+\ No newline at end of file
+diff --git a/app-brazil/src/main/java/com/pagonxt/brazil/interstitial/DeveloperInterstitialGuide.kt b/app-brazil/src/main/java/com/pagonxt/brazil/interstitial/DeveloperInterstitialGuide.kt
+index 6427566..265c28d 100644
+--- a/app-brazil/src/main/java/com/pagonxt/brazil/interstitial/DeveloperInterstitialGuide.kt
++++ b/app-brazil/src/main/java/com/pagonxt/brazil/interstitial/DeveloperInterstitialGuide.kt
+@@ -1,128 +1,62 @@
+ package com.pagonxt.brazil.interstitial
+ 
+-import androidx.compose.foundation.background
+-import androidx.compose.foundation.border
+-import androidx.compose.foundation.layout.Arrangement
+-import androidx.compose.foundation.layout.Box
+-import androidx.compose.foundation.layout.Column
+-import androidx.compose.foundation.layout.Spacer
+-import androidx.compose.foundation.layout.fillMaxSize
+-import androidx.compose.foundation.layout.fillMaxWidth
+-import androidx.compose.foundation.layout.height
+-import androidx.compose.foundation.layout.padding
+-import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.*
+ import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.filled.DoubleArrow
+-import androidx.compose.material.icons.filled.Info
+-import androidx.compose.material3.Button
+-import androidx.compose.material3.ButtonDefaults
+-import androidx.compose.material3.Card
+-import androidx.compose.material3.CardDefaults
+-import androidx.compose.material3.Icon
+-import androidx.compose.material3.MaterialTheme
+-import androidx.compose.material3.Text
++import androidx.compose.material3.*
+ import androidx.compose.runtime.Composable
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+-import androidx.compose.ui.graphics.Color
+ import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.text.style.TextAlign
+-import androidx.compose.ui.tooling.preview.Preview
+ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.unit.sp
+ 
++/**
++ * A custom client screen. Entirely decoupled from the SDK's domain.
++ * EXAMPLE IMPLEMENTATION
++ */
+ @Composable
+ fun DeveloperInterstitialGuide(
+-    onProceed: () -> Unit,
+-    onDismiss: () -> Unit
++    onProceed: () -> Unit
+ ) {
+-    Box(
+-        modifier = Modifier
+-            .fillMaxSize()
+-            .background(Color.Black.copy(alpha = 0.6f))
+-            .padding(24.dp),
+-        contentAlignment = Alignment.Center
++    Surface(
++        color = MaterialTheme.colorScheme.background,
++        modifier = Modifier.fillMaxSize()
+     ) {
+-        Card(
+-            shape = RoundedCornerShape(16.dp),
+-            colors = CardDefaults.cardColors(containerColor = Color(0xFF2C2C2E)),
++        Column(
+             modifier = Modifier
+-                .fillMaxWidth()
+-                .border(
+-                    width = 2.dp,
+-                    color = Color.Gray,
+-                    shape = RoundedCornerShape(16.dp)
+-                )
++                .fillMaxSize()
++                .padding(24.dp),
++            verticalArrangement = Arrangement.Center,
++            horizontalAlignment = Alignment.CenterHorizontally
+         ) {
+-            Column(
+-                modifier = Modifier.padding(24.dp),
+-                horizontalAlignment = Alignment.CenterHorizontally,
+-                verticalArrangement = Arrangement.Center
++            Text(
++                text = "Partner App Interstitial",
++                fontSize = 24.sp,
++                fontWeight = FontWeight.Bold,
++                color = MaterialTheme.colorScheme.primary,
++                textAlign = TextAlign.Center
++            )
++
++            Spacer(modifier = Modifier.height(24.dp))
++
++            Button(
++                onClick = onProceed,
++                shape = RoundedCornerShape(12.dp),
++                modifier = Modifier
++                    .fillMaxWidth()
++                    .height(50.dp)
+             ) {
+-                Icon(
+-                    imageVector = Icons.Default.Info,
+-                    contentDescription = "Ícone de Informação",
+-                    tint = Color.White,
+-                    modifier = Modifier.size(48.dp)
+-                )
+-
+-                Spacer(modifier = Modifier.height(16.dp))
+-
+                 Text(
+-                    text = "Tela de Interstitial",
+-                    style = MaterialTheme.typography.headlineSmall,
+-                    color = Color.White,
+-                    fontWeight = FontWeight.Bold,
+-                    textAlign = TextAlign.Center
++                    text = "Continue SDK Flow",
++                    fontSize = 16.sp,
++                    fontWeight = FontWeight.Bold
+                 )
+-
+-                Spacer(modifier = Modifier.height(8.dp))
+-
+-                Text(
+-                    text = "Este é um exemplo de tela customizada injetada no fluxo do SDK. Use este espaço para exibir conteúdo relevante, como promoções, avisos ou coletas de dados.",
+-                    style = MaterialTheme.typography.bodyMedium,
+-                    color = Color.White.copy(alpha = 0.8f),
+-                    textAlign = TextAlign.Center,
+-                    lineHeight = 20.sp
+-                )
+-
+-                Spacer(modifier = Modifier.height(24.dp))
+-
+-                Button(
+-                    onClick = onProceed,
+-                    colors = ButtonDefaults.buttonColors(
+-                        containerColor = MaterialTheme.colorScheme.primary,
+-                        contentColor = MaterialTheme.colorScheme.onPrimary
+-                    ),
+-                    shape = RoundedCornerShape(12.dp),
+-                    modifier = Modifier
+-                        .fillMaxWidth()
+-                        .height(50.dp)
+-                ) {
+-                    Text(
+-                        text = "Continuar Fluxo",
+-                        fontSize = 16.sp,
+-                        fontWeight = FontWeight.Bold
+-                    )
+-                    Spacer(modifier = Modifier.size(ButtonDefaults.IconSpacing))
+-                    Icon(
+-                        imageVector = Icons.Default.DoubleArrow,
+-                        contentDescription = null
+-                    )
+-                }
++                Spacer(modifier = Modifier.width(8.dp))
++                Icon(imageVector = Icons.Default.DoubleArrow, contentDescription = null)
+             }
+         }
+     }
+-}
+-
+-@Preview(showBackground = true, backgroundColor = 0xFF673AB7) // Fundo roxo para destacar a preview
+-@Composable
+-fun PreviewDeveloperInterstitialGuide() {
+-    MaterialTheme {
+-        DeveloperInterstitialGuide(
+-            onProceed = {},
+-            onDismiss = {}
+-        )
+-    }
+ }
+\ No newline at end of file
+diff --git a/gradle/libs.versions.toml b/gradle/libs.versions.toml
+index 2a0cc45..fb09664 100644
+--- a/gradle/libs.versions.toml
++++ b/gradle/libs.versions.toml
+@@ -1,5 +1,6 @@
+ [versions]
+ agp = "8.13.2"
++javaxInject = "1"
+ kotlin = "2.3.10"
+ coreKtx = "1.17.0"
+ junit = "4.13.2"
+@@ -25,6 +26,8 @@ koin = "4.1.1"
+ libplatform = "1.0.3"
+ libposdigital = "2.0.0"
+ utilslib = "1.0.0"
++navigationComposeVersion = "2.9.7"
++navigationRuntimeKtx = "2.9.7"
+ 
+ [libraries]
+ androidx-compose-foundation = { group = "androidx.compose.foundation", name = "foundation" }
+@@ -47,6 +50,7 @@ androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "u
+ androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+ androidx-compose-runtime = { group = "androidx.compose.runtime", name = "runtime" }
+ 
++javax-inject = { module = "javax.inject:javax.inject", version.ref = "javaxInject" }
+ junit = { group = "junit", name = "junit", version.ref = "junit" }
+ material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+ kotlinx-coroutines-core = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-core", version.ref = "kotlinx-coroutines-core" }
+@@ -77,6 +81,8 @@ koin-androidx-compose = { group = "io.insert-koin", name = "koin-androidx-compos
+ middleware-libplatform = { group = "br.com.getnet.newhal.middleware.libplatform", name = "libposemv", version.ref = "libplatform" }
+ middleware-libposdigital = { group = "br.com.getnet.newhal.middleware", name = "libposdigital", version.ref = "libposdigital" }
+ middleware-utils = { group = "br.com.getnet.newhal.utils", name = "utilslib", version.ref = "utilslib" }
++navigation-compose = { group = "androidx.navigation", name = "navigation-compose", version.ref = "navigationComposeVersion" }
++androidx-navigation-runtime-ktx = { group = "androidx.navigation", name = "navigation-runtime-ktx", version.ref = "navigationRuntimeKtx" }
+ 
+ [plugins]
+ android-application = { id = "com.android.application", version.ref = "agp" }
+diff --git a/sdk/brazil/build.gradle.kts b/sdk/brazil/build.gradle.kts
+index 5552ff3..0fdaa72 100644
+--- a/sdk/brazil/build.gradle.kts
++++ b/sdk/brazil/build.gradle.kts
+@@ -61,11 +61,6 @@ dependencies {
+     implementation(platform(libs.androidx.compose.bom))
+     implementation(project(":sdk:hal:middleware"))
+     implementation(project(":sdk:core"))
+-    implementation(project(":sdk:payment:core"))
+-    implementation(project(":sdk:payment:brazil"))
+-    implementation(project(":sdk:uxal"))
+-    implementation(project(":sdk:uxal:core"))
+-    implementation(project(":sdk:uxal:brazil"))
+     implementation(project(":sdk:uxal:ui-common"))
+ 
+     implementation(libs.androidx.core.ktx)
+@@ -77,6 +72,7 @@ dependencies {
+     implementation(libs.androidx.compose.material3)
+     implementation(libs.androidx.compose.material.icons.core)
+     implementation(libs.androidx.compose.material.icons.extended)
++    implementation(libs.navigation.compose)
+     debugImplementation(libs.androidx.compose.ui.tooling)
+     debugImplementation(libs.androidx.compose.ui.test.manifest)
+ 
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/di/BrazilPaymentDi.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/di/BrazilPaymentDi.kt
+index 7264148..e099c02 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/di/BrazilPaymentDi.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/di/BrazilPaymentDi.kt
+@@ -1,37 +1,28 @@
+ package com.pagonxt.sdk.brazil.di
+ 
+-import com.pagonxt.sdk.brazil.payment.domain.BrSaleEngineImpl
+-import com.pagonxt.sdk.brazil.payment.domain.viewmodel.BrEMVViewModel
+-import com.pagonxt.sdk.payment.core.contracts.FlowEngine
+-import com.pagonxt.sdk.payment.sale.BrSaleFlowEvent
+-import com.pagonxt.sdk.payment.sale.BrSaleFlowState
+-import org.koin.android.ext.koin.androidContext
+-import org.koin.core.module.Module
+-import org.koin.core.qualifier.named
++import com.pagonxt.sdk.brazil.payment.data.mapper.BrCardDataMapperimport com.pagonxt.sdk.brazil.payment.data.repository.BrTransactionRepositoryImpl
++import com.pagonxt.sdk.brazil.payment.domain.repository.BrTransactionRepository
++import com.pagonxt.sdk.brazil.payment.domain.usecases.BrGetNextPaymentStepUseCase
++import com.pagonxt.sdk.brazil.payment.domain.usecases.BrRequestCardCaptureUseCase
++import org.koin.core.module.dsl.bind
++import org.koin.core.module.dsl.factoryOf
++import org.koin.core.module.dsl.singleOf
+ import org.koin.dsl.module
+ 
+-/** Brazil payment module: provides the country-specific SaleEngine binding. */
+-val brazilPaymentModule: Module = module {
+-    factory<BrEMVViewModel>(named("BRAZIL")) {
+-        BrEMVViewModel(
+-            useCaseStart = get(),
+-            useCaseCancel = get(),
+-            observeEvents = get(),
+-            cardDataMapper = get(),
+-            processResultMapper = get(),
+-            resultDataMapper = get(),
+-            errorsEnumMapper = get()
+-        )
+-    }
+ 
+-    factory<FlowEngine<BrSaleFlowState, BrSaleFlowEvent>>(named("BRAZIL")) {
+-        BrSaleEngineImpl(
+-            context = androidContext(),
+-            viewModel = get(qualifier = named("BRAZIL")),
+-            hookRepository = get(),
+-            aidTable = get(),
+-            paymentService = get(),
+-            generateToken = get()
+-        )
+-    }
+-}
++/** * Brazil payment module: Provides the pure domain/data bindings using Koin Core.
++ */
++val brazilPaymentModule = module {
++
++    // Repository is a Singleton, retaining state throughout the flow
++    singleOf(::BrTransactionRepositoryImpl) { bind<BrTransactionRepository>() }
++
++    // UseCases should generally be factories so they don't hold stale state
++    factoryOf(::BrGetNextPaymentStepUseCase)
++
++    // Mappers
++    factoryOf(::BrCardDataMapper)
++
++    // Use Cases
++    factoryOf(::BrRequestCardCaptureUseCase)
++}
+\ No newline at end of file
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/data/mapper/BrCardDataMapper.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/data/mapper/BrCardDataMapper.kt
+index e923bf6..17f1173 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/data/mapper/BrCardDataMapper.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/data/mapper/BrCardDataMapper.kt
+@@ -1,4 +1,59 @@
+ package com.pagonxt.sdk.brazil.payment.data.mapper
+ 
++import com.pagonxt.sdk.core.domain.models.CardData
++import com.pagonxt.sdk.core.domain.models.CardProducts
++import com.pagonxt.sdk.core.domain.models.CardType
++import com.pagonxt.hal.emvKernel.CardData as HalKernelCardData
++import com.pagonxt.hal.emvKernel.CardType as HalKernelCardType
++
++/**
++ * Adapter puro responsável por isolar a camada de Domínio do SDK
++ * das estruturas de dados proprietárias do kernel de hardware (HAL).
++ */
+ class BrCardDataMapper {
++
++    /**
++     * Converte o modelo bruto do Kernel EMV para o modelo estrito do Core.
++     */
++    fun mapToDomain(rawHalModel: HalKernelCardData): CardData {
++        return CardData(
++            aid = rawHalModel.aid,
++            applicationName = rawHalModel.applicationName,
++            cardholderName = rawHalModel.cardholderName,
++            expirationDate = rawHalModel.expirationDate,
++            issuerCountryCode = rawHalModel.issuerCountryCode,
++            labelName = rawHalModel.labelName,
++            pan = rawHalModel.pan,
++            serviceCode = rawHalModel.serviceCode,
++            track1 = rawHalModel.track1,
++            track2 = rawHalModel.track2,
++            track3 = rawHalModel.track3,
++            type = mapCardType(rawHalModel.type),
++            products = mapProducts(rawHalModel.aid)
++        )
++    }
++
++    private fun mapCardType(halType: HalKernelCardType?): CardType {
++        // Como o tipo vem do Kernel (provavelmente um Enum Java/Kotlin),
++        // usamos a propriedade .name para traduzir de forma segura para nossa Sealed Interface
++        return when (halType?.name) {
++            "MAGNETIC" -> CardType.Magnetic
++            "CONTACT" -> CardType.Contact
++            "CONTACTLESS" -> CardType.Contactless
++            "CONTACTLESS_MAG" -> CardType.ContactlessMag
++            else -> CardType.Contact // Fallback de segurança para transações de chip
++        }
++    }
++
++    private fun mapProducts(aid: String?): List<CardProducts> {
++        // Exemplo de regra de negócio flexível focada no Brasil:
++        // Se a regra for baseada no final do AID (ex: terminação 2 para débito):
++        val isDebit = aid?.endsWith("2") == true
++
++        return if (isDebit) {
++            listOf(CardProducts.Debit)
++        } else {
++            listOf(CardProducts.Credit)
++        }
++    }
+ }
+\ No newline at end of file
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/data/repository/BrTransactionRepositoryImpl.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/data/repository/BrTransactionRepositoryImpl.kt
+index 8cc5ccb..7ebaa73 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/data/repository/BrTransactionRepositoryImpl.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/data/repository/BrTransactionRepositoryImpl.kt
+@@ -1,2 +1,49 @@
+-package com.pagonxt.sdk.brazil.payment.data.repository 
++package com.pagonxt.sdk.brazil.payment.data.repository
+ 
++import com.pagonxt.sdk.core.domain.models.CardData
++import com.pagonxt.sdk.hal.middleware.domain.model.ProcessResultModel
++import com.pagonxt.sdk.brazil.payment.domain.models.BrSaleMethod
++import com.pagonxt.sdk.brazil.payment.domain.models.BrTransactionContext
++import com.pagonxt.sdk.brazil.payment.domain.models.SaleParams
++import com.pagonxt.sdk.brazil.payment.domain.repository.BrTransactionRepository
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.asStateFlow
++import kotlinx.coroutines.flow.update
++
++class BrTransactionRepositoryImpl : BrTransactionRepository {
++
++    private val _params = MutableStateFlow(SaleParams())
++    override val params: StateFlow<SaleParams> = _params.asStateFlow()
++
++    private val _currentTransaction = MutableStateFlow<BrTransactionContext?>(null)
++    override val currentTransaction: StateFlow<BrTransactionContext?> = _currentTransaction.asStateFlow()
++
++    override fun updateAmount(amountInCents: Long) {
++        // use case
++        _params.update { it.copy(amountInCents = amountInCents) }
++    }
++
++    override fun updatePaymentMethod(method: BrSaleMethod) {
++        _params.update { it.copy(paymentMethod = method) }
++    }
++
++    override fun beginTransaction() {
++        if (_params.value.amountInCents > 0 && _params.value.paymentMethod != null) {
++            _currentTransaction.value = BrTransactionContext(params = _params.value)
++        }
++    }
++
++    override fun recordCardData(cardData: CardData) {
++        _currentTransaction.update { it?.copy(cardData = cardData) }
++    }
++
++    override fun recordProcessResult(result: ProcessResultModel) {
++        _currentTransaction.update { it?.copy(processResult = result) }
++    }
++
++    override fun clearTransaction() {
++        _currentTransaction.value = null
++        _params.value = SaleParams()
++    }
++}
+\ No newline at end of file
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrPaymentStep.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrPaymentStep.kt
+index 7f00745..20392cc 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrPaymentStep.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrPaymentStep.kt
+@@ -1,4 +1,4 @@
+-package com.pagonxt.sdk.payment.brazil.domain.models
++package com.pagonxt.sdk.brazil.payment.domain.models
+ 
+ import com.pagonxt.sdk.core.domain.models.PaymentStep
+ 
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrSaleCapturingStep.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrSaleCapturingStep.kt
+index e0ac6f4..64152d8 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrSaleCapturingStep.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrSaleCapturingStep.kt
+@@ -1,4 +1,4 @@
+-package com.pagonxt.sdk.payment.brazil.domain.models
++package com.pagonxt.sdk.brazil.payment.domain.models
+ 
+ /**
+  * Represents the granular steps during an EMV chip capture.
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrSaleMethod.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrSaleMethod.kt
+index c628af7..82602ff 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrSaleMethod.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrSaleMethod.kt
+@@ -1,4 +1,4 @@
+-package com.pagonxt.sdk.payment.brazil.domain.models
++package com.pagonxt.sdk.brazil.payment.domain.models
+ 
+ /**
+  * Represents the available payment methods for Brazil.
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrTransactionContext.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrTransactionContext.kt
+index 6118831..24121e5 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrTransactionContext.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/models/BrTransactionContext.kt
+@@ -1,4 +1,4 @@
+-package com.pagonxt.sdk.payment.brazil.domain.models
++package com.pagonxt.sdk.brazil.payment.domain.models
+ 
+ import com.pagonxt.sdk.core.domain.models.CardData
+ import com.pagonxt.sdk.core.domain.models.TransactionData
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/repository/BrTransactionRepository.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/repository/BrTransactionRepository.kt
+index 78ad067..f33430d 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/repository/BrTransactionRepository.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/repository/BrTransactionRepository.kt
+@@ -1,2 +1,20 @@
+-package com.pagonxt.sdk.brazil.payment.domain.repository 
++package com.pagonxt.sdk.brazil.payment.domain.repository
+ 
++import com.pagonxt.sdk.brazil.payment.domain.models.BrSaleMethod
++import com.pagonxt.sdk.brazil.payment.domain.models.BrTransactionContext
++import com.pagonxt.sdk.brazil.payment.domain.models.SaleParams
++import com.pagonxt.sdk.core.domain.repository.TransactionRepository
++import com.pagonxt.sdk.hal.middleware.domain.model.ProcessResultModel
++import kotlinx.coroutines.flow.StateFlow
++
++/**
++ * Brazil-specific repository extending the core contract.
++ * Exposes additional methods and states tailored for this country.
++ */
++interface BrTransactionRepository : TransactionRepository<BrTransactionContext> {
++    val params: StateFlow<SaleParams>
++
++    fun updatePaymentMethod(method: BrSaleMethod)
++    fun recordProcessResult(result: ProcessResultModel)
++    fun beginTransaction()
++}
+\ No newline at end of file
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/repository/PaymentNetworkService.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/repository/PaymentNetworkService.kt
+index 69fffc5..b405d73 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/repository/PaymentNetworkService.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/repository/PaymentNetworkService.kt
+@@ -1,2 +1,11 @@
+ package com.pagonxt.sdk.brazil.payment.domain.repository
+ 
++import com.pagonxt.sdk.hal.middleware.domain.model.AidTableModel
++
++interface AidService {
++    suspend fun getAidTable(): List<AidTableModel>
++}
++
++interface PaymentNetworkService {
++    suspend fun postPayment(amountInCents: Int, pan: String, tagsEmv: String, track2: String)
++}
+\ No newline at end of file
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrGetNextPaymentStepUseCase.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrGetNextPaymentStepUseCase.kt
+index 9e86128..1e1933a 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrGetNextPaymentStepUseCase.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrGetNextPaymentStepUseCase.kt
+@@ -3,15 +3,16 @@ package com.pagonxt.sdk.brazil.payment.domain.usecases
+ import com.pagonxt.sdk.brazil.payment.domain.repository.BrTransactionRepository
+ import com.pagonxt.sdk.core.domain.models.CorePaymentStep
+ import com.pagonxt.sdk.core.domain.models.PaymentStep
++import com.pagonxt.sdk.core.domain.usecases.GetNextPaymentStepUseCase
+ 
+ /**
+  * Core business logic to determine the next step in the Brazil payment flow.
+  */
+-class GetNextPaymentStepUseCase constructor(
++class BrGetNextPaymentStepUseCase constructor(
+     private val repository: BrTransactionRepository,
+-    private val json: String
+-) {
+-    operator fun invoke(currentStep: PaymentStep): PaymentStep {
++) : GetNextPaymentStepUseCase() {
++
++    override fun evaluateNextStep(currentStep: PaymentStep): PaymentStep {
+         val transaction = repository.currentTransaction.value
+         val params = repository.params.value
+ 
+@@ -44,7 +45,7 @@ class GetNextPaymentStepUseCase constructor(
+             /*
+              * DEMONSTRAÇÃO DE RETORNO DO FLUXO CUSTOMIZADO:
+              * Após exibir o QR Code, o fluxo pode ser finalizado ou ir para o recibo.
+-             * * is BrPaymentStep.PixQRCodeGeneration -> CorePaymentStep.Finished
++             * * is BrPaymentStep.PixQRCodeGeneration -> CorePaymentStep.ReceiptPrinting
+              */
+ 
+             // 3. Card captured -> process the transaction (EMV/Online)
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrProcessPaymentUseCase.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrProcessPaymentUseCase.kt
+index 20ae85f..2d50b11 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrProcessPaymentUseCase.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrProcessPaymentUseCase.kt
+@@ -1,2 +1,41 @@
+ package com.pagonxt.sdk.brazil.payment.domain.usecases
+ 
++import com.pagonxt.sdk.brazil.payment.domain.repository.BrTransactionRepository
++import com.pagonxt.sdk.brazil.payment.domain.repository.PaymentNetworkService
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.withContext
++
++sealed interface PaymentNetworkResult {
++    data object Approved : PaymentNetworkResult
++    data class Denied(val code: String, val reason: String) : PaymentNetworkResult
++}
++
++class ProcessPaymentUseCase(
++    private val repository: BrTransactionRepository,
++    private val paymentNetworkService: PaymentNetworkService
++) {
++    suspend operator fun invoke(): PaymentNetworkResult = withContext(Dispatchers.IO) {
++        val transaction = repository.currentTransaction.value
++
++        // Valida se o cartão já foi capturado antes de ir para a rede
++        if (transaction == null || !transaction.isCardCaptured || transaction.cardData == null) {
++            return@withContext PaymentNetworkResult.Denied("500", "Dados do cartão ausentes")
++        }
++
++        return@withContext try {
++            // Executa a chamada de rede (API)
++            paymentNetworkService.postPayment(
++                amountInCents = transaction.amountInCents.toInt(),
++                pan = transaction.cardData.pan,
++                tagsEmv = transaction.processResult?.tagsEmv.orEmpty(),
++                track2 = transaction.cardData.track2.orEmpty()
++            )
++
++            PaymentNetworkResult.Approved
++
++        } catch (e: Exception) {
++            // Em um cenário real, você mapearia HttpException, Timeout, etc.
++            PaymentNetworkResult.Denied("API_ERROR", e.message ?: "Erro de conexão")
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrRequestCardCaptureUseCase.kt b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrRequestCardCaptureUseCase.kt
+index 644a99b..16e3b45 100644
+--- a/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrRequestCardCaptureUseCase.kt
++++ b/sdk/brazil/src/main/java/com/pagonxt/sdk/brazil/payment/domain/usecases/BrRequestCardCaptureUseCase.kt
+@@ -1,81 +1,117 @@
+ package com.pagonxt.sdk.brazil.payment.domain.usecases
+ 
++import android.os.Build
++import androidx.annotation.RequiresApi
++import com.pagonxt.sdk.brazil.hal.domain.repository.EMVParams
++import com.pagonxt.sdk.brazil.hal.domain.state.EMVState
+ import com.pagonxt.sdk.brazil.hal.domain.usecase.ObserveEMVEventsUseCase
+ import com.pagonxt.sdk.brazil.hal.domain.usecase.StartEMVTransactionUseCase
++import com.pagonxt.sdk.brazil.payment.data.mapper.BrCardDataMapper
+ import com.pagonxt.sdk.brazil.payment.domain.repository.AidService
+ import com.pagonxt.sdk.brazil.payment.domain.repository.BrTransactionRepository
+-import com.pagonxt.sdk.core.domain.models.CorePaymentStep
+-import com.pagonxt.sdk.core.domain.models.PaymentStep
+-import com.pagonxt.sdk.core.domain.usecases.GetNextPaymentStepUseCase
+-import com.pagonxt.sdk.hal.middleware.domain.mapper.CardDataMapper
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.async
++import kotlinx.coroutines.flow.first
+ import kotlinx.coroutines.sync.Mutex
++import kotlinx.coroutines.withContext
+ 
+-class RequestCardCaptureUseCase constructor(
++/**
++ * Caso de Uso de Domínio Puro para executar o processo de captura de cartão EMV.
++ * Totalmente desacoplado do Android Context, estados de UI ou ViewModels.
++ */
++class BrRequestCardCaptureUseCase(
+     private val repository: BrTransactionRepository,
+     private val aidService: AidService,
+     private val startEMVUseCase: StartEMVTransactionUseCase,
+     private val observeEMVEventsUseCase: ObserveEMVEventsUseCase,
+-    private val cardDataMapper: CardDataMapper
+-)  {
+-    // Garante que o hardware do cartão não seja chamado duas vezes simultaneamente (double-tap)
++    private val cardDataMapper: BrCardDataMapper
++) {
++    // Mutex previne acessos concorrentes ao hardware (ex: duplo clique acidental em "Pagar")
+     private val hardwareMutex = Mutex()
+ 
+-    suspend operator fun invoke(): CaptureResult = withContext(Dispatchers.IO) {
+-        // Tenta adquirir o bloqueio. Se já estiver lendo, cancela o novo request.
++    @RequiresApi(Build.VERSION_CODES.O)
++    suspend operator fun invoke(): CardCaptureResult = withContext(Dispatchers.IO) {
+         if (!hardwareMutex.tryLock()) {
+-            return@withContext CaptureResult.HardwareError("BUSY", "Terminal já está em uso")
++            return@withContext CardCaptureResult.HardwareError("BUSY", "Terminal is already in use.")
+         }
+ 
+         try {
+             val transaction = repository.currentTransaction.value
+             if (transaction == null || transaction.amountInCents <= 0) {
+-                return@withContext CaptureResult.InvalidAmount("Transação não inicializada ou valor zero")
++                return@withContext CardCaptureResult.InvalidAmount("Transaction not initialized or amount is zero.")
+             }
+ 
+-            // 1. Busca a tabela AID (antes feita num observable solto, agora sequencial)
++            // 1. Busca a Tabela AID de forma segura e sequencial
+             val aidList = aidService.getAidTable()
+ 
+-            // 2. Inicia o hardware (Motor EMV)
++            // 2. Prepara os parâmetros para o terminal
+             val emvParams = EMVParams(
+-                aidList = aidList,
+-                paymentMethodCode = transaction.params.paymentMethod?.code ?: "01",
+-                amountInCents = transaction.amountInCents
++                aidModels = aidList,
++                strCodProd = transaction.params.paymentMethod?.code ?: "01",
++                amount = transaction.amountInCents
+             )
++
++            // 3. Prevenção de Race Condition:
++            // Preparamos o observador de fluxo ANTES de ligar o kernel EMV.
++            // Isso garante que não perderemos estados terminais rápidos como 'Approved' ou 'Declined'.
++            val terminalStateDeferred = async {
++                observeEMVEventsUseCase()
++                    .first { state ->
++                        // Fica bloqueado aqui até que um estado final seja emitido
++                        state is EMVState.Approved || state is EMVState.Error || state is EMVState.Declined
++                    }
++            }
++
++            // 4. Inicia o kernel do hardware
+             startEMVUseCase.startTransaction(emvParams)
+ 
+-            // 3. Ouve os eventos do HAL de forma síncrona até atingir um estado final
+-            val terminalState = observeEMVEventsUseCase()
+-                .onEach { state ->
+-                    // Atualiza o repositório com estados intermediários (se quisermos mostrar na UI)
+-                    // Exemplo: repository.updateCardMessage("Aproxime o cartão...")
+-                }
+-                .first { state ->
+-                    // Interrompe a coleta do fluxo (Flow) quando o cartão for lido com sucesso ou der erro
+-                    state is EMVState.Approved || state is EMVState.Error || state is EMVState.Declined
+-                }
++            // 5. Suspende a execução até que o hardware termine seu trabalho e emita o resultado
++            val terminalState = terminalStateDeferred.await()
+ 
+-            // 4. Avalia o estado final e atualiza a Single Source of Truth
++            // 6. Avalia o resultado e atualiza a Fonte de Verdade (Repositório)
+             return@withContext when (terminalState) {
+                 is EMVState.Approved -> {
+-                    val coreCardData = cardDataMapper.toDomain(terminalState.cardData)
+-                    repository.recordCardData(coreCardData)
+-                    // Se houver tags EMV necessárias para o passo seguinte online:
+-                    // repository.recordProcessResult(terminalState.processResult)
+-                    CaptureResult.Success
++                    val rawHalCardData = terminalState.cardData
++
++                    if (rawHalCardData != null) {
++                        // O Adapter traduz o dado cru do middleware para o modelo estrito do Domínio
++                        val coreCardData = cardDataMapper.mapToDomain(rawHalCardData)
++                        repository.recordCardData(coreCardData)
++
++                        // Se existirem outros dados como ProcessResult a serem salvos para envio online:
++                        // terminalState.processResult?.let { processResult ->
++                        //      repository.recordProcessResult(processResultMapper.mapToDomain(processResult))
++                        // }
++
++                        CardCaptureResult.Success
++                    } else {
++                        CardCaptureResult.HardwareError("NO_DATA", "Cartão aprovado, mas sem dados retornados.")
++                    }
+                 }
+                 is EMVState.Error -> {
+-                    CaptureResult.HardwareError(terminalState.error.name, "Erro de hardware")
++                    val errorCode = terminalState.error?.name ?: "UNKNOWN_ERROR"
++                    CardCaptureResult.HardwareError(errorCode, "Hardware failure during capture.")
+                 }
+                 is EMVState.Declined -> {
+-                    CaptureResult.HardwareError("DECLINED", "Cartão recusado pelo chip")
++                    CardCaptureResult.HardwareError("DECLINED", "Card declined by chip: ${terminalState.data}")
+                 }
+-                else -> CaptureResult.HardwareError("UNKNOWN", "Estado inesperado")
++                else -> CardCaptureResult.HardwareError("FATAL", "Unexpected terminal state.")
+             }
+ 
+         } catch (e: Exception) {
+-            return@withContext CaptureResult.HardwareError("500", e.message ?: "Falha fatal")
++            return@withContext CardCaptureResult.HardwareError("EXCEPTION", e.message ?: "Fatal error")
+         } finally {
+             hardwareMutex.unlock()
+         }
+     }
++}
++
++/**
++ * Resultado de domínio agnóstico representando a conclusão da operação de hardware.
++ */
++sealed interface CardCaptureResult {
++    data object Success : CardCaptureResult
++    data class HardwareError(val code: String, val message: String) : CardCaptureResult
++    data class InvalidAmount(val message: String) : CardCaptureResult
++    data class HaltedByInterceptor(val reason: String) : CardCaptureResult
+ }
+\ No newline at end of file
+diff --git a/sdk/build.gradle.kts b/sdk/build.gradle.kts
+index c728ebc..bb97939 100644
+--- a/sdk/build.gradle.kts
++++ b/sdk/build.gradle.kts
+@@ -84,18 +84,14 @@ dependencies {
+     implementation(platform(libs.androidx.compose.bom))
+     implementation(libs.androidx.compose.runtime)
+     api(project(":sdk:core"))
+-    api(project(":sdk:uxal:core"))
+     implementation(project(":sdk:hal:middleware"))
+-    implementation(project(":sdk:payment:core"))
+     implementation(project(":sdk:uxal:ui-common"))
+ 
+     // Brazil flavor deps
+     add("brazilImplementation", project(":sdk:brazil"))
+-    add("brazilImplementation", project(":sdk:payment:brazil"))
+     add("brazilApi", project(":sdk:uxal:brazil"))
+ 
+     // Argentina flavor deps
+-    add("argentinaImplementation", project(":sdk:payment:argentina"))
+     add("argentinaApi", project(":sdk:uxal:argentina"))
+ 
+     implementation(libs.androidx.core.ktx)
+diff --git a/sdk/common-utils/build.gradle.kts b/sdk/common-utils/build.gradle.kts
+index cd70b20..99c9e5b 100644
+--- a/sdk/common-utils/build.gradle.kts
++++ b/sdk/common-utils/build.gradle.kts
+@@ -3,6 +3,10 @@ plugins {
+     alias(libs.plugins.kotlin.android)
+ }
+ 
++kotlin {
++    jvmToolchain(rootProject.extra["jvmToolchainVersion"] as Int)
++}
++
+ android {
+     namespace = "com.pagonxt.sdk.common_utils"
+     compileSdk {
+@@ -10,7 +14,7 @@ android {
+     }
+ 
+     defaultConfig {
+-        minSdk = 28
++        minSdk = 26
+ 
+         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+         consumerProguardFiles("consumer-rules.pro")
+@@ -25,12 +29,12 @@ android {
+             )
+         }
+     }
+-    compileOptions {
+-        sourceCompatibility = JavaVersion.VERSION_11
+-        targetCompatibility = JavaVersion.VERSION_11
+-    }
+-    kotlinOptions {
+-        jvmTarget = "11"
++
++    publishing {
++        singleVariant("release") {
++            withSourcesJar()
++            withJavadocJar()
++        }
+     }
+ }
+ 
+diff --git a/sdk/common-utils/src/main/java/com/pagonxt/sdk/common_utils/extensions/BigDecimalExtensions.kt b/sdk/common-utils/src/main/java/com/pagonxt/sdk/common_utils/extensions/BigDecimalExtensions.kt
+index b4f854d..4e83403 100644
+--- a/sdk/common-utils/src/main/java/com/pagonxt/sdk/common_utils/extensions/BigDecimalExtensions.kt
++++ b/sdk/common-utils/src/main/java/com/pagonxt/sdk/common_utils/extensions/BigDecimalExtensions.kt
+@@ -1,4 +1,4 @@
+-package com.pagonxt.sdk.core.utils
++package com.pagonxt.sdk.common_utils.extensions
+ 
+ import java.math.BigDecimal
+ import java.math.RoundingMode
+diff --git a/sdk/common-utils/src/main/java/com/pagonxt/sdk/common_utils/extensions/CentsExtensions.kt b/sdk/common-utils/src/main/java/com/pagonxt/sdk/common_utils/extensions/CentsExtensions.kt
+index c0f7200..2043461 100644
+--- a/sdk/common-utils/src/main/java/com/pagonxt/sdk/common_utils/extensions/CentsExtensions.kt
++++ b/sdk/common-utils/src/main/java/com/pagonxt/sdk/common_utils/extensions/CentsExtensions.kt
+@@ -1,4 +1,4 @@
+-package com.pagonxt.sdk.core.utils
++package com.pagonxt.sdk.common_utils.extensions
+ 
+ import java.math.BigDecimal
+ import java.math.RoundingMode
+diff --git a/sdk/core/build.gradle.kts b/sdk/core/build.gradle.kts
+index 3de286a..0d9da37 100644
+--- a/sdk/core/build.gradle.kts
++++ b/sdk/core/build.gradle.kts
+@@ -58,4 +58,5 @@ dependencies {
+     implementation(platform(libs.androidx.compose.bom))
+     implementation(libs.kotlinx.coroutines.core)
+     implementation(libs.androidx.compose.runtime)
++    implementation(libs.androidx.lifecycle.viewmodel.ktx)
+ }
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/interceptors/PaymentInterceptor.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/interceptors/PaymentInterceptor.kt
+index ed9540c..cbc8258 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/interceptors/PaymentInterceptor.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/interceptors/PaymentInterceptor.kt
+@@ -1,2 +1,12 @@
+ package com.pagonxt.sdk.core.domain.interceptors
+ 
++import com.pagonxt.sdk.core.domain.models.TransactionData
++
++sealed interface InterceptorResult {
++    data class Continue(val updatedData: TransactionData) : InterceptorResult
++    data class Halt(val reasonCode: String, val message: String) : InterceptorResult
++}
++
++interface PaymentInterceptor {
++    suspend fun intercept(transaction: TransactionData): InterceptorResult
++}
+\ No newline at end of file
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/CardData.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/CardData.kt
+index 9cbd2f0..180b93e 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/CardData.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/CardData.kt
+@@ -1,4 +1,4 @@
+-package com.pagonxt.sdk.core.domain.interceptors.models
++package com.pagonxt.sdk.core.domain.models
+ 
+ data class CardData(
+     val aid: String?,
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/PaymentStep.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/PaymentStep.kt
+index 951fe32..81f11ea 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/PaymentStep.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/PaymentStep.kt
+@@ -1,2 +1,20 @@
+ package com.pagonxt.sdk.core.domain.models
+ 
++/**
++ * Base contract for all payment steps in the SDK.
++ * By using an open interface, each country/flavor can define its own
++ * sealed interfaces inheriting from this, allowing infinite extensibility.
++ */
++interface PaymentStep
++
++/**
++ * Common steps that are highly likely to be shared.
++ */
++sealed interface CorePaymentStep : PaymentStep {
++    data object AmountEntry : CorePaymentStep
++    data object ProductSelection : CorePaymentStep
++    data object CardCapture : CorePaymentStep
++    data object EmvProcessing : CorePaymentStep
++    data object ReceiptPrinting : CorePaymentStep
++    data object Finished : CorePaymentStep
++}
+\ No newline at end of file
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/TransactionData.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/TransactionData.kt
+index 951fe32..3031d68 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/TransactionData.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/models/TransactionData.kt
+@@ -1,2 +1,12 @@
+ package com.pagonxt.sdk.core.domain.models
+ 
++/**
++ * Base contract for transaction data.
++ * Exposes only the universally required properties that any payment needs.
++ */
++interface TransactionData {
++    val amountInCents: Long
++    val cardData: CardData?
++    val isReadyToCapture: Boolean
++    val isCardCaptured: Boolean
++}
+\ No newline at end of file
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/repository/TransactionRepository.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/repository/TransactionRepository.kt
+index 8bd2497..9fe03a8 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/repository/TransactionRepository.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/repository/TransactionRepository.kt
+@@ -1,2 +1,17 @@
+ package com.pagonxt.sdk.core.domain.repository
+ 
++import com.pagonxt.sdk.core.domain.models.CardData
++import com.pagonxt.sdk.core.domain.models.TransactionData
++import kotlinx.coroutines.flow.StateFlow
++
++/**
++ * Base repository contract.
++ * @param T The specific TransactionData implementation for the flavor.
++ */
++interface TransactionRepository<T : TransactionData> {
++    val currentTransaction: StateFlow<T?>
++
++    fun updateAmount(amountInCents: Long)
++    fun recordCardData(cardData: CardData)
++    fun clearTransaction()
++}
+\ No newline at end of file
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/usecases/GetNextPaymentStepUseCase.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/usecases/GetNextPaymentStepUseCase.kt
+index 9991671..2d0ea14 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/usecases/GetNextPaymentStepUseCase.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/domain/usecases/GetNextPaymentStepUseCase.kt
+@@ -1,2 +1,40 @@
+ package com.pagonxt.sdk.core.domain.usecases
+ 
++import com.pagonxt.sdk.core.domain.models.CorePaymentStep
++import com.pagonxt.sdk.core.domain.models.PaymentStep
++
++/**
++ * Base UseCase for determining the next payment step.
++ * Uses the Template Method Pattern to enforce global SDK rules
++ * while allowing flavor-specific customizations.
++ */
++abstract class GetNextPaymentStepUseCase {
++
++    /**
++     * The main entry point. This method is FINAL (by default in Kotlin)
++     * or deliberately not overridden, enforcing our core locks.
++     */
++    operator fun invoke(currentStep: PaymentStep): PaymentStep {
++
++        // --- CORE ENFORCEMENTS (BLOCKS) ---
++
++        // Rule 1: Once the flow reaches Finished, it can NEVER escape Finished.
++        if (currentStep is CorePaymentStep.Finished) {
++            return CorePaymentStep.Finished
++        }
++
++        // --- FLAVOR-SPECIFIC EVALUATION ---
++
++        val nextStep = evaluateNextStep(currentStep)
++
++        // (Optional) Additional post-evaluation rules could be added here
++        // e.g., preventing a direct jump from Receipt back to Amount.
++
++        return nextStep
++    }
++
++    /**
++     * Each flavor/country must implement this to define its specific flow logic.
++     */
++    protected abstract fun evaluateNextStep(currentStep: PaymentStep): PaymentStep
++}
+\ No newline at end of file
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/mvi/BaseMviViewModel.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/mvi/BaseMviViewModel.kt
+index 0107559..2d099fa 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/mvi/BaseMviViewModel.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/mvi/BaseMviViewModel.kt
+@@ -1,2 +1,32 @@
+ package com.pagonxt.sdk.core.presentation.mvi
+ 
++import androidx.lifecycle.ViewModel
++import androidx.lifecycle.viewModelScope
++import kotlinx.coroutines.flow.MutableSharedFlow
++import kotlinx.coroutines.flow.SharedFlow
++import kotlinx.coroutines.flow.asSharedFlow
++import kotlinx.coroutines.launch
++
++/**
++ * Base ViewModel for all MVI screens in the SDK.
++ * It abstracts away the boilerplate of handling One-Shot Effects (ViewEffect).
++ */
++abstract class BaseMviViewModel<Event : ViewEvent, State : ViewState, Effect : ViewEffect> :
++    ViewModel(), MviContract<Event, State, Effect> {
++
++    private val _effects = MutableSharedFlow<Effect>()
++    override val effects: SharedFlow<Effect> = _effects.asSharedFlow()
++
++    /**
++     * Helper function to emit effects cleanly from child ViewModels
++     * without needing to explicitly call [viewModelScope.launch { }] every time.
++     */
++    protected fun emitEffect(effect: Effect) {
++        viewModelScope.launch {
++            _effects.emit(effect)
++        }
++    }
++
++    // Note: 'state' and 'processEvent' remain abstract (enforced by the interface)
++    // because each screen defines its own reactive state and business rules.
++}
+\ No newline at end of file
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/mvi/MviContracts.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/mvi/MviContracts.kt
+index 0107559..46fc64f 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/mvi/MviContracts.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/mvi/MviContracts.kt
+@@ -1,2 +1,32 @@
+ package com.pagonxt.sdk.core.presentation.mvi
+ 
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.SharedFlow
++
++
++/**
++ * This is the immutable state of the screen.
++ * The UI only observes and renders what it holds.
++ */
++interface ViewState
++
++/**
++ * This is the user actions that are allowed at the screen.
++ * The UI sends these actions to the ViewModel.
++ */
++interface ViewEvent
++
++/**
++ * Represents one-shot triggers to be emitted and consumed.
++ */
++interface ViewEffect
++
++/**
++ * Base contract for all ViewModels.
++ * Grants a unidirection data flow.
++ */
++interface MviContract<Event : ViewEvent, State : ViewState, Effect : ViewEffect> {
++    val state: StateFlow<State>
++    val effects: SharedFlow<Effect>
++    fun processEvent(event: Event)
++}
+\ No newline at end of file
+diff --git a/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/navigation/NavigationContracts.kt b/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/navigation/NavigationContracts.kt
+index 8ca83bd..f112c4a 100644
+--- a/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/navigation/NavigationContracts.kt
++++ b/sdk/core/src/main/java/com/pagonxt/sdk/core/presentation/navigation/NavigationContracts.kt
+@@ -1,2 +1,35 @@
+ package com.pagonxt.sdk.core.presentation.navigation
+ 
++import androidx.compose.runtime.Composable
++import kotlin.reflect.KClass
++
++/**
++ * Base interface for all Type-Safe routes in the SDK.
++ */
++interface SdkRoute
++
++/**
++ * Callback allowing a custom injected screen to return control to the SDK.
++ */
++typealias ResumeSdkFlowCallback = (nextSdkRouteInstance: SdkRoute) -> Unit
++
++/**
++ * A "Slot" representing a third party Compose screen injected into the SDK.
++ */
++typealias ExternalCustomScreen = @Composable (resumeFlow: ResumeSdkFlowCallback) -> Unit
++
++/**
++ * Interceptor rule engine. The client app evaluates the current and default next route,
++ * and decides whether to hijack the flow and redirect to a custom route.
++ */
++interface SdkFlowInterceptor {
++    fun overrideNextRoute(currentRoute: SdkRoute, defaultNextRoute: SdkRoute): SdkRoute
++}
++
++/**
++ * Configuration payload provided by the host app upon SDK initialization.
++ */
++data class SdkUiNavigationConfig(
++    val interceptor: SdkFlowInterceptor? = null,
++    val customScreens: Map<KClass<out SdkRoute>, ExternalCustomScreen> = emptyMap()
++)
+\ No newline at end of file
+diff --git a/sdk/payment/.gitignore b/sdk/payment/.gitignore
+deleted file mode 100644
+index 42afabf..0000000
+--- a/sdk/payment/.gitignore
++++ /dev/null
+@@ -1 +0,0 @@
+-/build
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/.gitignore b/sdk/payment/argentina/.gitignore
+deleted file mode 100644
+index 42afabf..0000000
+--- a/sdk/payment/argentina/.gitignore
++++ /dev/null
+@@ -1 +0,0 @@
+-/build
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/build.gradle.kts b/sdk/payment/argentina/build.gradle.kts
+deleted file mode 100644
+index 7210d16..0000000
+--- a/sdk/payment/argentina/build.gradle.kts
++++ /dev/null
+@@ -1,68 +0,0 @@
+-plugins {
+-    alias(libs.plugins.android.library)
+-    alias(libs.plugins.kotlin.android)
+-    alias(libs.plugins.maven.publish)
+-}
+-
+-kotlin {
+-    jvmToolchain(rootProject.extra["jvmToolchainVersion"] as Int)
+-}
+-
+-android {
+-    namespace = "com.pagonxt.sdk.payment"
+-    compileSdk {
+-        version = release(36)
+-    }
+-
+-    defaultConfig {
+-        minSdk = 26
+-
+-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+-        consumerProguardFiles("consumer-rules.pro")
+-    }
+-
+-    buildTypes {
+-        release {
+-            isMinifyEnabled = false
+-            proguardFiles(
+-                getDefaultProguardFile("proguard-android-optimize.txt"),
+-                "proguard-rules.pro"
+-            )
+-        }
+-    }
+-
+-    publishing {
+-        singleVariant("release") {
+-            withJavadocJar()
+-        }
+-    }
+-}
+-
+-afterEvaluate {
+-    publishing {
+-        publications {
+-            create<MavenPublication>("release") {
+-                from(components["release"])
+-
+-                groupId = "com.pagonxt.sdk"
+-                artifactId = "pagonxt-sdk-payment-argentina"
+-                version = "1.0.0-SNAPSHOT"
+-            }
+-        }
+-    }
+-}
+-
+-dependencies {
+-    // Koin DI
+-    implementation(platform(libs.koin.bom))
+-    implementation(libs.koin.android)
+-
+-    implementation(project(":sdk:core"))
+-    implementation(project(":sdk:payment:core"))
+-    implementation(libs.androidx.core.ktx)
+-    implementation(libs.androidx.appcompat)
+-    implementation(libs.material)
+-    testImplementation(libs.junit)
+-    androidTestImplementation(libs.androidx.junit)
+-    androidTestImplementation(libs.androidx.espresso.core)
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/consumer-rules.pro b/sdk/payment/argentina/consumer-rules.pro
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/sdk/payment/argentina/proguard-rules.pro b/sdk/payment/argentina/proguard-rules.pro
+deleted file mode 100644
+index 481bb43..0000000
+--- a/sdk/payment/argentina/proguard-rules.pro
++++ /dev/null
+@@ -1,21 +0,0 @@
+-# Add project specific ProGuard rules here.
+-# You can control the set of applied configuration files using the
+-# proguardFiles setting in build.gradle.
+-#
+-# For more details, see
+-#   http://developer.android.com/guide/developing/tools/proguard.html
+-
+-# If your project uses WebView with JS, uncomment the following
+-# and specify the fully qualified class name to the JavaScript interface
+-# class:
+-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+-#   public *;
+-#}
+-
+-# Uncomment this to preserve the line number information for
+-# debugging stack traces.
+-#-keepattributes SourceFile,LineNumberTable
+-
+-# If you keep the line number information, uncomment this to
+-# hide the original source file name.
+-#-renamesourcefileattribute SourceFile
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/di/ArgentinaPaymentDi.kt b/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/di/ArgentinaPaymentDi.kt
+deleted file mode 100644
+index 94ae92e..0000000
+--- a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/di/ArgentinaPaymentDi.kt
++++ /dev/null
+@@ -1,27 +0,0 @@
+-package com.pagonxt.sdk.payment.di
+-
+-import com.pagonxt.sdk.core.flow.sale.SaleFlowIntent
+-import com.pagonxt.sdk.core.flow.sale.SaleFlowState
+-import com.pagonxt.sdk.payment.core.contracts.FlowEngine
+-import com.pagonxt.sdk.payment.sale.ArSaleEngineImpl
+-import com.pagonxt.sdk.payment.sale.ArSaleFlowIntent
+-import com.pagonxt.sdk.payment.sale.ArSaleFlowState
+-import org.koin.android.ext.koin.androidContext
+-import org.koin.core.module.Module
+-import org.koin.core.qualifier.named
+-import org.koin.dsl.module
+-
+-/** Argentina payment module: provides the country-specific FlowEngine binding. */
+-val argentinaPaymentModule: Module = module {
+-    factory<FlowEngine<ArSaleFlowState, ArSaleFlowIntent>>(named("ARGENTINA")) {
+-        ArSaleEngineImpl(
+-            context = androidContext(),
+-            hookRepository = get(),
+-        )
+-    }
+-
+-    factory<FlowEngine<SaleFlowState, SaleFlowIntent>> {
+-        @Suppress("UNCHECKED_CAST")
+-        get<FlowEngine<ArSaleFlowState, ArSaleFlowIntent>>(qualifier = named("ARGENTINA")) as FlowEngine<SaleFlowState, SaleFlowIntent>
+-    }
+-}
+diff --git a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleEngineImpl.kt b/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleEngineImpl.kt
+deleted file mode 100644
+index cddc7d7..0000000
+--- a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleEngineImpl.kt
++++ /dev/null
+@@ -1,109 +0,0 @@
+-package com.pagonxt.sdk.payment.sale
+-
+-import android.content.Context
+-import com.pagonxt.sdk.core.flow.sale.SaleFlowState
+-import com.pagonxt.sdk.payment.core.contracts.FlowEngine
+-import com.pagonxt.sdk.payment.core.contracts.FlowHookRepository
+-import kotlinx.coroutines.CoroutineScope
+-import kotlinx.coroutines.Dispatchers
+-import kotlinx.coroutines.SupervisorJob
+-import kotlinx.coroutines.cancel
+-import kotlinx.coroutines.delay
+-import kotlinx.coroutines.flow.MutableStateFlow
+-import kotlinx.coroutines.flow.StateFlow
+-import kotlinx.coroutines.flow.asStateFlow
+-import kotlinx.coroutines.launch
+-
+-class ArSaleEngineImpl(
+-    private val context: Context,
+-    private val hookRepository: FlowHookRepository
+-) : FlowEngine<ArSaleFlowState, ArSaleFlowIntent> {
+-
+-    private val engineScope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+-
+-    private val _state = MutableStateFlow<SaleFlowState>(
+-        SaleFlowState.InitialState
+-    )
+-
+-    @Suppress("UNCHECKED_CAST")
+-    override val state: StateFlow<ArSaleFlowState>
+-        get() = _state.asStateFlow() as StateFlow<ArSaleFlowState>
+-
+-    fun emitState(newState: ArSaleFlowState) {
+-        _state.value = newState
+-    }
+-
+-    override fun onCleared() {
+-        engineScope.cancel()
+-    }
+-
+-
+-    val saleState: ArSaleState = ArSaleState()
+-
+-    override fun processEvent(event: ArSaleFlowIntent) {
+-        when (event) {
+-            is ArSaleFlowIntent.ChangeAmount -> {
+-                emitState(saleState.changeAmount(event.amount))
+-            }
+-
+-            is ArSaleFlowIntent.TipDefinition.Start -> {}
+-            is ArSaleFlowIntent.TipDefinition.SetPercentage -> {
+-                emitState(saleState.changeTip(event.percentage))
+-            }
+-
+-            is ArSaleFlowIntent.TipDefinition.SetAmount -> {
+-                emitState(saleState.changeTip(event.tipAmount))
+-            }
+-
+-            is ArSaleFlowIntent.ProductSelect -> {
+-                emitState(saleState.changePaymentMethod(event.method))
+-            }
+-
+-            ArSaleFlowIntent.RequestCard -> {
+-                startGetCardFlow()
+-            }
+-        }
+-    }
+-
+-    fun startGetCardFlow() {
+-        engineScope.launch {
+-            emitState(
+-                ArSaleFlowState.CardReading.WaitingCardPresentation(
+-                    saleState.amountInCents,
+-                    saleState.paymentMethod!!,
+-                    "Aproxime ou insira seu cartão..."
+-                )
+-            )
+-
+-            delay(2000)
+-            emitState(
+-                ArSaleFlowState.CardReading.FailureOnReadingRead(
+-                    saleState.amountInCents,
+-                    saleState.paymentMethod!!,
+-                    "Falha na leitura do cartão."
+-                )
+-            )
+-
+-            delay(2000)
+-            emitState(
+-                ArSaleFlowState.CardReading.WaitingCardPresentation(
+-                    saleState.amountInCents,
+-                    saleState.paymentMethod!!,
+-                    "Insira seu cartão..."
+-                )
+-            )
+-
+-            delay(2000)
+-            emitState(
+-                ArSaleFlowState.CardReading.SuccessOnReadingCard(
+-                    saleState.amountInCents,
+-                    saleState.paymentMethod!!
+-                )
+-            )
+-
+-            delay(2000)
+-            emitState(ArSaleFlowState.AmountDefinition.ValidAmount(saleState.amountInCents))
+-        }
+-    }
+-
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleFlowIntent.kt b/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleFlowIntent.kt
+deleted file mode 100644
+index dbe8d31..0000000
+--- a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleFlowIntent.kt
++++ /dev/null
+@@ -1,17 +0,0 @@
+-package com.pagonxt.sdk.payment.sale
+-
+-import com.pagonxt.sdk.core.flow.sale.SaleFlowIntent
+-import java.math.BigDecimal
+-
+-sealed interface ArSaleFlowIntent : SaleFlowIntent {
+-    data class ChangeAmount(val amount: Long) : ArSaleFlowIntent
+-
+-    sealed class TipDefinition : ArSaleFlowIntent {
+-        data object Start : TipDefinition()
+-        data class SetPercentage(val percentage: BigDecimal) : TipDefinition()
+-        data class SetAmount(val tipAmount: Long) : TipDefinition()
+-    }
+-
+-    data object RequestCard : ArSaleFlowIntent
+-    data class ProductSelect(val method: ArSaleMethod) : ArSaleFlowIntent
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleFlowState.kt b/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleFlowState.kt
+deleted file mode 100644
+index f7d8bb5..0000000
+--- a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleFlowState.kt
++++ /dev/null
+@@ -1,85 +0,0 @@
+-package com.pagonxt.sdk.payment.sale
+-
+-import com.pagonxt.sdk.core.flow.sale.SaleFlowState
+-import com.pagonxt.sdk.core.hooks.PostEmissiveState
+-import java.math.BigDecimal
+-
+-/**
+- * Define os estados de fluxo de venda (`FlowState`) específicos para a Argentina.
+- *
+- * Esta classe `sealed` herda da interface genérica [SaleFlowState], especializando-a
+- * com os passos e dados concretos necessários para uma transação na Argentina.
+- *
+- * ## Arquitetura e Extensibilidade
+- *
+- * Este arquivo é um exemplo chave de como a extensibilidade do SDK é alcançada.
+- * O núcleo do SDK opera com a abstração [SaleFlowState], enquanto este módulo (`payment/argentina`)
+- * fornece a implementação concreta.
+- *
+- * Cada sub-classe `sealed` (ex: `AmountDefinition`, `TipDefinition`) representa um passo ou
+- * um conjunto de passos lógicos dentro do fluxo de pagamento argentino. Elas contêm todos os
+- * dados necessários para que a camada de UI (`uxal`) possa renderizar o estado atual.
+- *
+- * Para adicionar um novo país, um desenvolvedor criaria um arquivo similar, definindo os
+- * estados específicos para o fluxo daquele país, sempre herdando da abstração [SaleFlowState].
+- */
+-sealed class ArSaleFlowState() : SaleFlowState {
+-    /** Estados relacionados à definição do valor da transação. */
+-    sealed class AmountDefinition : ArSaleFlowState() {
+-        data class ValidAmount(
+-            val newAmountInCents: Long
+-        ) : AmountDefinition()
+-
+-        data class  InvalidAmount(
+-            val lastValidAmount: Long
+-        ) : AmountDefinition()
+-    }
+-
+-    /** Estados relacionados ao cálculo e definição de gorjeta (propina). */
+-    sealed class TipDefinition : ArSaleFlowState() {
+-        data class ValidTip(
+-            val tipPercentage: BigDecimal,
+-            val baseAmountInCents: Long,
+-            val newAmountInCents: Long,
+-            val tipAmountInCents: Long
+-        ) : TipDefinition()
+-
+-        data class InvalidTip(
+-            val amount: Long
+-        ) : TipDefinition()
+-    }
+-
+-    /** Estados relacionados à seleção do produto ou método de pagamento. */
+-    sealed class ProductDefinition : ArSaleFlowState() {
+-        data class Selection(
+-            val amount: Long,
+-            val method: ArSaleMethod?
+-        ) : ProductDefinition()
+-
+-        data class Selected(
+-            val amount: Long,
+-            val method: ArSaleMethod?
+-        ) : ProductDefinition()
+-    }
+-
+-    /** Estados relacionados ao processo de leitura do cartão. */
+-    sealed class CardReading : ArSaleFlowState() {
+-        data class WaitingCardPresentation(
+-            val amount: Long,
+-            val method: ArSaleMethod,
+-            val message: String
+-        ) : CardReading()
+-
+-        data class SuccessOnReadingCard(
+-            val amount: Long,
+-            val method: ArSaleMethod
+-        ) : CardReading(), PostEmissiveState
+-
+-        data class FailureOnReadingRead(
+-            val amount: Long,
+-            val method: ArSaleMethod,
+-            val errorMessage: String
+-        ) : CardReading()
+-    }
+-
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleMethod.kt b/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleMethod.kt
+deleted file mode 100644
+index 8e6a9f7..0000000
+--- a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleMethod.kt
++++ /dev/null
+@@ -1,7 +0,0 @@
+-package com.pagonxt.sdk.payment.sale
+-
+-enum class ArSaleMethod {
+-    CREDIT_CARD,
+-    DEBIT_CARD,
+-    QR_CODE
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleProcessingStep.kt b/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleProcessingStep.kt
+deleted file mode 100644
+index 98b6d31..0000000
+--- a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleProcessingStep.kt
++++ /dev/null
+@@ -1,7 +0,0 @@
+-package com.pagonxt.sdk.payment.sale
+-
+-enum class ArSaleProcessingStep {
+-    INSERT_CARD,
+-    PIN,
+-    ONLINE
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleState.kt b/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleState.kt
+deleted file mode 100644
+index ab2363e..0000000
+--- a/sdk/payment/argentina/src/main/java/com/pagonxt/sdk/payment/sale/ArSaleState.kt
++++ /dev/null
+@@ -1,74 +0,0 @@
+-package com.pagonxt.sdk.payment.sale
+-
+-import com.pagonxt.sdk.core.utils.bd
+-import com.pagonxt.sdk.core.utils.percent
+-import com.pagonxt.sdk.core.utils.percentageOf
+-import java.math.BigDecimal
+-
+-data class ArSaleState(
+-    private var _amountInCents: Long = 0,
+-    private var _tipAmountInCents: Long = 0,
+-    private var _paymentMethod: ArSaleMethod? = null,
+-) {
+-
+-    val amountInCents: Long
+-        get() = _amountInCents
+-    val tipAmountInCents: Long
+-        get() = _tipAmountInCents
+-    val paymentMethod: ArSaleMethod?
+-        get() = _paymentMethod
+-
+-
+-    val maxTipAllowedByLaw = 20.bd
+-
+-    fun changeAmount(amountInCents: Long): ArSaleFlowState {
+-        if (this.amountInCents != amountInCents && amountInCents >= 0) {
+-            this._amountInCents = amountInCents
+-            return ArSaleFlowState.AmountDefinition.ValidAmount(amountInCents)
+-        }
+-        return ArSaleFlowState.AmountDefinition.InvalidAmount(this.amountInCents)
+-    }
+-
+-    fun changeTip(tipPercentage: BigDecimal): ArSaleFlowState {
+-        if (amountInCents <= 0) {
+-            return ArSaleFlowState.AmountDefinition.InvalidAmount(amountInCents)
+-        } else if (tipPercentage > maxTipAllowedByLaw) {
+-            return ArSaleFlowState.TipDefinition.InvalidTip(amountInCents)
+-        } else {
+-            _tipAmountInCents = amountInCents percent tipPercentage
+-            return ArSaleFlowState.TipDefinition.ValidTip(
+-                tipPercentage,
+-                amountInCents,
+-                tipAmountInCents + amountInCents,
+-                tipAmountInCents
+-            )
+-        }
+-    }
+-
+-    fun changeTip(tipAmountInCents: Long): ArSaleFlowState {
+-        if (amountInCents <= 0) {
+-            return ArSaleFlowState.AmountDefinition.InvalidAmount(amountInCents)
+-        } else if (tipAmountInCents < 0) {
+-            return ArSaleFlowState.TipDefinition.InvalidTip(amountInCents)
+-        }
+-        val tipPercentage = tipAmountInCents percentageOf amountInCents
+-        if (tipPercentage > maxTipAllowedByLaw) {
+-            return ArSaleFlowState.TipDefinition.InvalidTip(amountInCents)
+-        }
+-        _tipAmountInCents = tipAmountInCents
+-        return ArSaleFlowState.TipDefinition.ValidTip(
+-            tipPercentage,
+-            amountInCents,
+-            this@ArSaleState.tipAmountInCents + amountInCents,
+-            this@ArSaleState.tipAmountInCents
+-        )
+-    }
+-
+-    fun changePaymentMethod(method: ArSaleMethod): ArSaleFlowState {
+-        if (amountInCents > 0) {
+-            _paymentMethod = method
+-            return ArSaleFlowState.ProductDefinition.Selected(amountInCents, method)
+-        }
+-        return ArSaleFlowState.AmountDefinition.InvalidAmount(0)
+-    }
+-}
+diff --git a/sdk/payment/brazil/.gitignore b/sdk/payment/brazil/.gitignore
+deleted file mode 100644
+index 42afabf..0000000
+--- a/sdk/payment/brazil/.gitignore
++++ /dev/null
+@@ -1 +0,0 @@
+-/build
+\ No newline at end of file
+diff --git a/sdk/payment/brazil/build.gradle.kts b/sdk/payment/brazil/build.gradle.kts
+deleted file mode 100644
+index 84ca4b6..0000000
+--- a/sdk/payment/brazil/build.gradle.kts
++++ /dev/null
+@@ -1,69 +0,0 @@
+-plugins {
+-    alias(libs.plugins.android.library)
+-    alias(libs.plugins.kotlin.android)
+-    alias(libs.plugins.maven.publish)
+-}
+-
+-kotlin {
+-    jvmToolchain(rootProject.extra["jvmToolchainVersion"] as Int)
+-}
+-
+-android {
+-    namespace = "com.pagonxt.payment.brazil"
+-    compileSdk {
+-        version = release(36)
+-    }
+-
+-    defaultConfig {
+-        minSdk = 26
+-
+-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+-        consumerProguardFiles("consumer-rules.pro")
+-    }
+-
+-    buildTypes {
+-        release {
+-            isMinifyEnabled = false
+-            proguardFiles(
+-                getDefaultProguardFile("proguard-android-optimize.txt"),
+-                "proguard-rules.pro"
+-            )
+-        }
+-    }
+-
+-    publishing {
+-        singleVariant("release") {
+-            withJavadocJar()
+-        }
+-    }
+-}
+-
+-afterEvaluate {
+-    publishing {
+-        publications {
+-            create<MavenPublication>("release") {
+-                from(components["release"])
+-
+-                groupId = "com.pagonxt.sdk"
+-                artifactId = "pagonxt-sdk-payment-brazil"
+-                version = "1.0.0-SNAPSHOT"
+-            }
+-        }
+-    }
+-}
+-
+-dependencies {
+-    // Koin DI
+-    implementation(platform(libs.koin.bom))
+-    implementation(libs.koin.android)
+-
+-    implementation(project(":sdk:hal:middleware"))
+-    implementation(project(":sdk:core"))
+-    implementation(project(":sdk:payment:core"))
+-    implementation(libs.androidx.core.ktx)
+-    implementation(libs.androidx.appcompat)
+-    implementation(libs.material)
+-    testImplementation(libs.junit)
+-    androidTestImplementation(libs.androidx.junit)
+-    androidTestImplementation(libs.androidx.espresso.core)
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/brazil/consumer-rules.pro b/sdk/payment/brazil/consumer-rules.pro
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/sdk/payment/brazil/proguard-rules.pro b/sdk/payment/brazil/proguard-rules.pro
+deleted file mode 100644
+index 481bb43..0000000
+--- a/sdk/payment/brazil/proguard-rules.pro
++++ /dev/null
+@@ -1,21 +0,0 @@
+-# Add project specific ProGuard rules here.
+-# You can control the set of applied configuration files using the
+-# proguardFiles setting in build.gradle.
+-#
+-# For more details, see
+-#   http://developer.android.com/guide/developing/tools/proguard.html
+-
+-# If your project uses WebView with JS, uncomment the following
+-# and specify the fully qualified class name to the JavaScript interface
+-# class:
+-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+-#   public *;
+-#}
+-
+-# Uncomment this to preserve the line number information for
+-# debugging stack traces.
+-#-keepattributes SourceFile,LineNumberTable
+-
+-# If you keep the line number information, uncomment this to
+-# hide the original source file name.
+-#-renamesourcefileattribute SourceFile
+\ No newline at end of file
+diff --git a/sdk/payment/build.gradle.kts b/sdk/payment/build.gradle.kts
+deleted file mode 100644
+index f538ebb..0000000
+--- a/sdk/payment/build.gradle.kts
++++ /dev/null
+@@ -1,63 +0,0 @@
+-plugins {
+-    alias(libs.plugins.android.library)
+-    alias(libs.plugins.kotlin.android)
+-    alias(libs.plugins.maven.publish)
+-}
+-
+-kotlin {
+-    jvmToolchain(rootProject.extra["jvmToolchainVersion"] as Int)
+-}
+-
+-android {
+-    namespace = "com.pagonxt.sdk.payment"
+-    compileSdk {
+-        version = release(36)
+-    }
+-
+-    defaultConfig {
+-        minSdk = 26
+-
+-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+-        consumerProguardFiles("consumer-rules.pro")
+-    }
+-
+-    buildTypes {
+-        release {
+-            isMinifyEnabled = false
+-            proguardFiles(
+-                getDefaultProguardFile("proguard-android-optimize.txt"),
+-                "proguard-rules.pro"
+-            )
+-        }
+-    }
+-
+-    publishing {
+-        singleVariant("release") {
+-            withJavadocJar()
+-        }
+-    }
+-}
+-
+-afterEvaluate {
+-    publishing {
+-        publications {
+-            create<MavenPublication>("release") {
+-                from(components["release"])
+-
+-                groupId = "com.pagonxt.sdk"
+-                artifactId = "pagonxt-sdk-payment"
+-                version = "1.0.0-SNAPSHOT"
+-            }
+-        }
+-    }
+-}
+-
+-dependencies {
+-    implementation(project(":sdk:core"))
+-    implementation(libs.androidx.core.ktx)
+-    implementation(libs.androidx.appcompat)
+-    implementation(libs.material)
+-    testImplementation(libs.junit)
+-    androidTestImplementation(libs.androidx.junit)
+-    androidTestImplementation(libs.androidx.espresso.core)
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/consumer-rules.pro b/sdk/payment/consumer-rules.pro
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/sdk/payment/core/.gitignore b/sdk/payment/core/.gitignore
+deleted file mode 100644
+index 42afabf..0000000
+--- a/sdk/payment/core/.gitignore
++++ /dev/null
+@@ -1 +0,0 @@
+-/build
+\ No newline at end of file
+diff --git a/sdk/payment/core/build.gradle.kts b/sdk/payment/core/build.gradle.kts
+deleted file mode 100644
+index 87e913d..0000000
+--- a/sdk/payment/core/build.gradle.kts
++++ /dev/null
+@@ -1,63 +0,0 @@
+-plugins {
+-    alias(libs.plugins.android.library)
+-    alias(libs.plugins.kotlin.android)
+-    alias(libs.plugins.maven.publish)
+-}
+-
+-kotlin {
+-    jvmToolchain(rootProject.extra["jvmToolchainVersion"] as Int)
+-}
+-
+-android {
+-    namespace = "com.pagonxt.sdk.payment.core"
+-    compileSdk {
+-        version = release(36)
+-    }
+-
+-    defaultConfig {
+-        minSdk = 26
+-
+-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+-        consumerProguardFiles("consumer-rules.pro")
+-    }
+-
+-    buildTypes {
+-        release {
+-            isMinifyEnabled = false
+-            proguardFiles(
+-                getDefaultProguardFile("proguard-android-optimize.txt"),
+-                "proguard-rules.pro"
+-            )
+-        }
+-    }
+-
+-    publishing {
+-        singleVariant("release") {
+-            withJavadocJar()
+-        }
+-    }
+-}
+-
+-afterEvaluate {
+-    publishing {
+-        publications {
+-            create<MavenPublication>("release") {
+-                from(components["release"])
+-
+-                groupId = "com.pagonxt.sdk"
+-                artifactId = "pagonxt-sdk-payment-core"
+-                version = "1.0.0-SNAPSHOT"
+-            }
+-        }
+-    }
+-}
+-
+-dependencies {
+-    implementation(project(":sdk:core"))
+-    implementation(libs.androidx.core.ktx)
+-    implementation(libs.androidx.appcompat)
+-    implementation(libs.material)
+-    testImplementation(libs.junit)
+-    androidTestImplementation(libs.androidx.junit)
+-    androidTestImplementation(libs.androidx.espresso.core)
+-}
+\ No newline at end of file
+diff --git a/sdk/payment/core/consumer-rules.pro b/sdk/payment/core/consumer-rules.pro
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/sdk/payment/core/proguard-rules.pro b/sdk/payment/core/proguard-rules.pro
+deleted file mode 100644
+index 481bb43..0000000
+--- a/sdk/payment/core/proguard-rules.pro
++++ /dev/null
+@@ -1,21 +0,0 @@
+-# Add project specific ProGuard rules here.
+-# You can control the set of applied configuration files using the
+-# proguardFiles setting in build.gradle.
+-#
+-# For more details, see
+-#   http://developer.android.com/guide/developing/tools/proguard.html
+-
+-# If your project uses WebView with JS, uncomment the following
+-# and specify the fully qualified class name to the JavaScript interface
+-# class:
+-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+-#   public *;
+-#}
+-
+-# Uncomment this to preserve the line number information for
+-# debugging stack traces.
+-#-keepattributes SourceFile,LineNumberTable
+-
+-# If you keep the line number information, uncomment this to
+-# hide the original source file name.
+-#-renamesourcefileattribute SourceFile
+\ No newline at end of file
+diff --git a/sdk/payment/proguard-rules.pro b/sdk/payment/proguard-rules.pro
+deleted file mode 100644
+index 481bb43..0000000
+--- a/sdk/payment/proguard-rules.pro
++++ /dev/null
+@@ -1,21 +0,0 @@
+-# Add project specific ProGuard rules here.
+-# You can control the set of applied configuration files using the
+-# proguardFiles setting in build.gradle.
+-#
+-# For more details, see
+-#   http://developer.android.com/guide/developing/tools/proguard.html
+-
+-# If your project uses WebView with JS, uncomment the following
+-# and specify the fully qualified class name to the JavaScript interface
+-# class:
+-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+-#   public *;
+-#}
+-
+-# Uncomment this to preserve the line number information for
+-# debugging stack traces.
+-#-keepattributes SourceFile,LineNumberTable
+-
+-# If you keep the line number information, uncomment this to
+-# hide the original source file name.
+-#-renamesourcefileattribute SourceFile
+\ No newline at end of file
+diff --git a/sdk/uxal/.gitignore b/sdk/uxal/.gitignore
+deleted file mode 100644
+index 42afabf..0000000
+--- a/sdk/uxal/.gitignore
++++ /dev/null
+@@ -1 +0,0 @@
+-/build
+\ No newline at end of file
+diff --git a/sdk/uxal/argentina/build.gradle.kts b/sdk/uxal/argentina/build.gradle.kts
+index 1fd5512..f0c7604 100644
+--- a/sdk/uxal/argentina/build.gradle.kts
++++ b/sdk/uxal/argentina/build.gradle.kts
+@@ -56,9 +56,7 @@ afterEvaluate {
+ 
+ dependencies {
+     implementation(project(":sdk:core"))
+-    implementation(project(":sdk:uxal:core"))
+     implementation(project(":sdk:uxal:ui-common"))
+-    implementation(project(":sdk:payment:argentina"))
+     implementation(platform(libs.androidx.compose.bom))
+     implementation(libs.androidx.core.ktx)
+     implementation(libs.androidx.appcompat)
+diff --git a/sdk/uxal/brazil/build.gradle.kts b/sdk/uxal/brazil/build.gradle.kts
+index 89596f9..4947703 100644
+--- a/sdk/uxal/brazil/build.gradle.kts
++++ b/sdk/uxal/brazil/build.gradle.kts
+@@ -56,10 +56,8 @@ afterEvaluate {
+ 
+ dependencies {
+     implementation(project(":sdk:core"))
+-    implementation(project(":sdk:uxal"))
+-    implementation(project(":sdk:uxal:core"))
+     implementation(project(":sdk:uxal:ui-common"))
+-    implementation(project(":sdk:payment:brazil"))
++    implementation(project(":sdk:brazil"))
+     implementation(platform(libs.androidx.compose.bom))
+     implementation(libs.androidx.core.ktx)
+     implementation(libs.androidx.appcompat)
+@@ -69,6 +67,9 @@ dependencies {
+     implementation(libs.androidx.compose.ui.graphics)
+     implementation(libs.androidx.compose.ui.tooling.preview)
+     implementation(libs.androidx.compose.material3)
++    implementation(libs.androidx.navigation.runtime.ktx)
++    implementation(libs.navigation.compose)
++    implementation(libs.koin.androidx.compose)
+     debugImplementation(libs.androidx.compose.ui.tooling)
+     debugImplementation(libs.androidx.compose.ui.test.manifest)
+     implementation(libs.androidx.compose.material.icons.core)
+diff --git a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/navigation/BrNavGraph.kt b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/navigation/BrNavGraph.kt
+index 68c3d50..a1d2dbf 100644
+--- a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/navigation/BrNavGraph.kt
++++ b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/navigation/BrNavGraph.kt
+@@ -1,19 +1,29 @@
+ package com.pagonxt.sdk.uxal.brazil.navigation
+ 
+-package com.pagonxt.sdk.brazil.uxal.navigation
+-
+ import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.lifecycle.compose.collectAsStateWithLifecycle
+ import androidx.navigation.NavHostController
+ import androidx.navigation.compose.NavHost
+ import androidx.navigation.compose.composable
+ import com.pagonxt.sdk.core.presentation.navigation.SdkUiNavigationConfig
++import com.pagonxt.sdk.uxal.brazil.screens.amountandproduct.BrAmountAndProductSelection
++import com.pagonxt.sdk.uxal.brazil.screens.amountandproduct.BrAmountAndProductViewEffect
++import com.pagonxt.sdk.uxal.brazil.screens.cardreading.BrCardReadingScreen
++import com.pagonxt.sdk.uxal.brazil.screens.cardreading.BrCardReadingViewEffect
++import com.pagonxt.sdk.uxal.brazil.screens.paymentsuccess.BrPaymentSuccessScreen
++import com.pagonxt.sdk.uxal.brazil.screens.paymentsuccess.BrPaymentSuccessViewEffect
++import com.pagonxt.sdk.uxal.brazil.viewmodel.BrAmountAndProductViewModel
++import com.pagonxt.sdk.uxal.brazil.viewmodel.BrCardReadingViewModel
++import com.pagonxt.sdk.uxal.brazil.viewmodel.BrPaymentSuccessViewModel
++import org.koin.androidx.compose.koinViewModel
+ 
+ @Composable
+ fun BrSaleNavGraph(
+     navController: NavHostController,
+     sdkConfig: SdkUiNavigationConfig
+ ) {
+-    // Helper to evaluate client interceptions safely
+     fun navigateWithInterceptor(currentRoute: BrSdkRoutes, defaultNextRoute: BrSdkRoutes) {
+         val targetRoute = sdkConfig.interceptor?.overrideNextRoute(
+             currentRoute = currentRoute,
+@@ -27,32 +37,78 @@ fun BrSaleNavGraph(
+         navController = navController,
+         startDestination = BrSdkRoutes.AmountAndProduct
+     ) {
+-        // 1. Amount and Product Selection Screen
++
+         composable<BrSdkRoutes.AmountAndProduct> {
+-            // (ViewModel instantiation and State Collection omitted for brevity)
+-            // BrAmountAndProductSelection(...) { event ->
+-            //     when(event) {
+-            //         is NavigateToNextStep -> navigateWithInterceptor(
+-            //             currentRoute = BrSdkRoutes.AmountAndProduct,
+-            //             defaultNextRoute = BrSdkRoutes.CardReading
+-            //         )
+-            //     }
+-            // }
++            val viewModel: BrAmountAndProductViewModel = koinViewModel()
++            val state by viewModel.state.collectAsStateWithLifecycle()
++
++            LaunchedEffect(Unit) {
++                viewModel.effects.collect { effect ->
++                    when (effect) {
++                        is BrAmountAndProductViewEffect.NavigateToNextStep -> {
++                            navigateWithInterceptor(BrSdkRoutes.AmountAndProduct, BrSdkRoutes.CardReading)
++                        }
++                        is BrAmountAndProductViewEffect.NavigateBack -> {
++                            navController.popBackStack()
++                        }
++                    }
++                }
++            }
++
++            BrAmountAndProductSelection(
++                state = state,
++                onEvent = viewModel::processEvent
++            )
+         }
+ 
+-        // 2. Card Reading Screen
+         composable<BrSdkRoutes.CardReading> {
+-            // BrCardReading(...) { ... }
++            val viewModel: BrCardReadingViewModel = koinViewModel()
++            val state by viewModel.state.collectAsStateWithLifecycle()
++
++            LaunchedEffect(Unit) {
++                viewModel.effects.collect { effect ->
++                    when (effect) {
++                        is BrCardReadingViewEffect.NavigateToNextStep -> {
++                            navigateWithInterceptor(BrSdkRoutes.CardReading, BrSdkRoutes.PaymentSuccess)
++                        }
++                        is BrCardReadingViewEffect.NavigateBack -> {
++                            navController.popBackStack()
++                        }
++                    }
++                }
++            }
++
++            BrCardReadingScreen(
++                state = state,
++                onEvent = viewModel::processEvent
++            )
++        }
++
++        composable<BrSdkRoutes.PaymentSuccess> {
++            val viewModel: BrPaymentSuccessViewModel = koinViewModel()
++            val state by viewModel.state.collectAsStateWithLifecycle()
++
++            LaunchedEffect(Unit) {
++                viewModel.effects.collect { effect ->
++                    when (effect) {
++                        is BrPaymentSuccessViewEffect.NavigateToHome -> {
++                            navController.popBackStack(navController.graph.startDestinationId, inclusive = false)
++                        }
++                    }
++                }
++            }
++
++            BrPaymentSuccessScreen(
++                state = state,
++                onEvent = viewModel::processEvent
++            )
+         }
+ 
+-        // --- SLOT API: INJECT CUSTOM CLIENT SCREENS ---
+-        // (In a real implementation, we map KClass to actual string routes or
+-        // type-safe builders to satisfy Compose Navigation 2.8.0 requirements)
++        // SLOT API: INJECT CUSTOM CLIENT SCREENS ---
+         sdkConfig.customScreens.forEach { (routeClass, screenContent) ->
+             composable(route = routeClass.qualifiedName!!) {
+                 screenContent { nextSdkRouteInstance ->
+                     navController.navigate(nextSdkRouteInstance) {
+-                        // Securely wipe the custom screen from backstack
+                         popUpTo(routeClass.qualifiedName!!) { inclusive = true }
+                     }
+                 }
+diff --git a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/amountandproduct/BrAmountAndProductContracts.kt b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/amountandproduct/BrAmountAndProductContracts.kt
+index 0c953a1..b1f4176 100644
+--- a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/amountandproduct/BrAmountAndProductContracts.kt
++++ b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/amountandproduct/BrAmountAndProductContracts.kt
+@@ -1,2 +1,33 @@
+ package com.pagonxt.sdk.uxal.brazil.screens.amountandproduct
+ 
++import com.pagonxt.sdk.brazil.payment.domain.models.BrSaleMethod
++import com.pagonxt.sdk.core.presentation.mvi.ViewEffect
++import com.pagonxt.sdk.core.presentation.mvi.ViewEvent
++import com.pagonxt.sdk.core.presentation.mvi.ViewState
++
++/**
++ * Immutable state for the Amount and Product Selection screen.
++ */
++data class BrAmountAndProductViewState(
++    val formattedAmount: String = "0.00",
++    val isAmountValid: Boolean = false,
++    val isLoading: Boolean = false,
++    val errorMessage: String? = null,
++    val viewEffect: BrAmountAndProductViewEffect? = null,
++) : ViewState
++
++/**
++ * User actions triggered from the UI.
++ */
++sealed interface BrAmountAndProductViewEvent : ViewEvent {
++    data object OnBackClicked : BrAmountAndProductViewEvent
++    data class OnPaymentMethodSelected(val method: BrSaleMethod) : BrAmountAndProductViewEvent
++}
++
++/**
++ * One-shot navigation effects.
++ */
++sealed interface BrAmountAndProductViewEffect : ViewEffect {
++    data object NavigateBack : BrAmountAndProductViewEffect
++    data class NavigateToNextStep(val route: String) : BrAmountAndProductViewEffect
++}
+\ No newline at end of file
+diff --git a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/paymentsuccess/BrPaymentSuccessContracts.kt b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/paymentsuccess/BrPaymentSuccessContracts.kt
+index 4c9ca64..9cacb5e 100644
+--- a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/paymentsuccess/BrPaymentSuccessContracts.kt
++++ b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/paymentsuccess/BrPaymentSuccessContracts.kt
+@@ -1,2 +1,23 @@
+ package com.pagonxt.sdk.uxal.brazil.screens.paymentsuccess
+ 
++import com.pagonxt.sdk.core.presentation.mvi.ViewEffect
++import com.pagonxt.sdk.core.presentation.mvi.ViewEvent
++import com.pagonxt.sdk.core.presentation.mvi.ViewState
++
++/**
++ * State representing the final approved receipt info.
++ */
++data class BrPaymentSuccessViewState(
++    val formattedAmount: String = "",
++    val paymentMethodName: String = "",
++    val successMessage: String? = null,
++    val viewEffect: BrPaymentSuccessViewEffect? = null,
++) : ViewState
++
++sealed interface BrPaymentSuccessViewEvent : ViewEvent {
++    data object OnFinishClicked : BrPaymentSuccessViewEvent
++}
++
++sealed interface BrPaymentSuccessViewEffect : ViewEffect {
++    data object NavigateToHome : BrPaymentSuccessViewEffect
++}
+\ No newline at end of file
+diff --git a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/paymentsuccess/BrPaymentSuccessScreen.kt b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/paymentsuccess/BrPaymentSuccessScreen.kt
+index 5a6c726..4dc892a 100644
+--- a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/paymentsuccess/BrPaymentSuccessScreen.kt
++++ b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/screens/paymentsuccess/BrPaymentSuccessScreen.kt
+@@ -1,150 +1,123 @@
+ package com.pagonxt.sdk.uxal.brazil.screens.paymentsuccess
+ 
+-import androidx.compose.foundation.layout.Arrangement
+-import androidx.compose.foundation.layout.Box
+-import androidx.compose.foundation.layout.Column
+-import androidx.compose.foundation.layout.Spacer
+-import androidx.compose.foundation.layout.fillMaxSize
+-import androidx.compose.foundation.layout.fillMaxWidth
+-import androidx.compose.foundation.layout.height
+-import androidx.compose.foundation.layout.padding
+-import androidx.compose.foundation.layout.size
++import androidx.compose.foundation.layout.*
++import androidx.compose.foundation.shape.RoundedCornerShape
+ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.filled.CheckCircle
+-import androidx.compose.material3.Button
+-import androidx.compose.material3.CenterAlignedTopAppBar
+-import androidx.compose.material3.ExperimentalMaterial3Api
+-import androidx.compose.material3.Icon
+-import androidx.compose.material3.MaterialTheme
+-import androidx.compose.material3.Scaffold
+-import androidx.compose.material3.Text
+-import androidx.compose.material3.TopAppBarDefaults
++import androidx.compose.material3.*
+ import androidx.compose.runtime.Composable
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+-import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.text.font.FontWeight
+ import androidx.compose.ui.text.style.TextAlign
+ import androidx.compose.ui.tooling.preview.Preview
+ import androidx.compose.ui.unit.dp
+-import com.pagonxt.sdk.core.uxal.ResourceResolver
+-import com.pagonxt.sdk.payment.sale.BrSaleMethodEnum
+-import com.pagonxt.sdk.uxal.brazil.utils.toRealString
+-import com.pagonxt.sdk.uxal.ui_common.services.ResourceResolverImpl
+-import com.pagonxt.sdk.uxal.ui_common.services.WhiteLabelConfig
++import androidx.compose.ui.unit.sp
+ 
+-// TODO: need to be internal?
+-object BrPaymentSuccessContract {
+-    data class ViewData(
+-        val amountInCents: Long,
+-        val paymentMethod: BrSaleMethodEnum?,
+-        val instructionMessage: String?,
+-        val errorMessage: String? = null,
+-    )
+-
+-    sealed class ViewAction {
+-        data object Finish : ViewAction()
+-    }
+-}
+-
+-// TODO: need to be internal?
+ @OptIn(ExperimentalMaterial3Api::class)
+ @Composable
+ fun BrPaymentSuccessScreen(
+-    resourceResolver: ResourceResolver,
+-    state: BrPaymentSuccessContract.ViewData,
+-    onAction: (BrPaymentSuccessContract.ViewAction) -> Unit
++    state: BrPaymentSuccessViewState,
++    onEvent: (BrPaymentSuccessViewEvent) -> Unit
+ ) {
+     Scaffold(
+         topBar = {
+             CenterAlignedTopAppBar(
+-                colors = TopAppBarDefaults.topAppBarColors(
+-                    containerColor = MaterialTheme.colorScheme.primary,
+-                    titleContentColor = MaterialTheme.colorScheme.onPrimary,
+-                    navigationIconContentColor = MaterialTheme.colorScheme.onPrimary,
++                colors = TopAppBarDefaults.centerAlignedTopAppBarColors(
++                    containerColor = MaterialTheme.colorScheme.background
+                 ),
+-                title = {
+-                    Text(
+-                        resourceResolver.resolveText("uxal_br_payment_success_screen_title"),
+-                        textAlign = TextAlign.Center,
+-                        color = MaterialTheme.colorScheme.onPrimary
+-                    )
+-                }
++                title = { Text("Receipt") }
+             )
+-        },
++        }
+     ) { paddingValues ->
+         Box(
+             modifier = Modifier
++                .fillMaxSize()
+                 .padding(paddingValues)
+-                .fillMaxSize(),
+         ) {
+-            // Center the Column between header and bottom button
+             Column(
+-                horizontalAlignment = Alignment.CenterHorizontally,
+-                verticalArrangement = Arrangement.Center,
+                 modifier = Modifier
+-                    .align(Alignment.Center)
+                     .fillMaxWidth()
+-                    .padding(bottom = 88.dp, start = 16.dp, end = 16.dp)
++                    .align(Alignment.Center)
++                    .padding(horizontal = 24.dp),
++                horizontalAlignment = Alignment.CenterHorizontally,
++                verticalArrangement = Arrangement.Center
+             ) {
+                 Icon(
+                     imageVector = Icons.Filled.CheckCircle,
+                     contentDescription = "Success",
+                     tint = MaterialTheme.colorScheme.primary,
+-                    modifier = Modifier.size(80.dp)
++                    modifier = Modifier.size(100.dp)
+                 )
++
+                 Spacer(modifier = Modifier.height(24.dp))
++
+                 Text(
+-                    text = resourceResolver.resolveText("uxal_br_payment_success_message"),
++                    text = state.successMessage,
+                     style = MaterialTheme.typography.headlineMedium,
++                    fontWeight = FontWeight.Bold,
+                     color = MaterialTheme.colorScheme.onBackground,
+                     textAlign = TextAlign.Center
+                 )
+-                Text(
+-                    text = "${
+-                        BrSaleMethodEnum.paseToString(
+-                            state.paymentMethod,
+-                            resourceResolver
++
++                Spacer(modifier = Modifier.height(16.dp))
++
++                // Display the amount and method clearly
++                Surface(
++                    shape = RoundedCornerShape(16.dp),
++                    color = MaterialTheme.colorScheme.surfaceVariant,
++                    modifier = Modifier.fillMaxWidth()
++                ) {
++                    Column(
++                        modifier = Modifier.padding(24.dp),
++                        horizontalAlignment = Alignment.CenterHorizontally
++                    ) {
++                        Text(
++                            text = state.formattedAmount,
++                            fontSize = 36.sp,
++                            fontWeight = FontWeight.Bold,
++                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                         )
+-                    }",
+-                    style = MaterialTheme.typography.headlineMedium,
+-                    color = MaterialTheme.colorScheme.onBackground,
+-                    textAlign = TextAlign.Center
+-                )
+-                Text(
+-                    text = "R$ ${state.amountInCents.toRealString()}",
+-                    style = MaterialTheme.typography.headlineMedium,
+-                    color = MaterialTheme.colorScheme.onBackground,
+-                    textAlign = TextAlign.Center
+-                )
++                        Spacer(modifier = Modifier.height(8.dp))
++                        Text(
++                            text = "Paid via ${state.paymentMethodName}",
++                            fontSize = 16.sp,
++                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.8f)
++                        )
++                    }
++                }
+             }
++
+             Button(
+-                onClick = { onAction(BrPaymentSuccessContract.ViewAction.Finish) },
++                onClick = { onEvent(BrPaymentSuccessViewEvent.OnFinishClicked) },
+                 modifier = Modifier
+                     .align(Alignment.BottomCenter)
+                     .fillMaxWidth()
+                     .padding(24.dp)
++                    .height(56.dp),
++                shape = RoundedCornerShape(12.dp)
+             ) {
+-                Text(resourceResolver.resolveText("uxal_br_payment_success_button_text"))
++                Text(
++                    text = state.buttonText,
++                    fontSize = 18.sp,
++                    fontWeight = FontWeight.Bold
++                )
+             }
+         }
+     }
+ }
+ 
+-@Preview(showBackground = true, heightDp = 650, widthDp = 380)
++@Preview(showBackground = true)
+ @Composable
+-fun BrPaymentSuccessPreview() {
++private fun BrPaymentSuccessPreview() {
+     MaterialTheme {
+         BrPaymentSuccessScreen(
+-            state = BrPaymentSuccessContract.ViewData(
+-                0,
+-                BrSaleMethodEnum.CREDIT_CARD,
+-                "Mensagem de Status"
++            state = BrPaymentSuccessViewState(
++                formattedAmount = "R$ 150.00",
++                paymentMethodName = "Credit Card",
++                successMessage = "Approved Successfully"
+             ),
+-            onAction = {},
+-            resourceResolver = ResourceResolverImpl(
+-                LocalContext.current,
+-                WhiteLabelConfig(emptyMap(), emptyMap())
+-            )
++            onEvent = {}
+         )
+     }
+ }
+\ No newline at end of file
+diff --git a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrAmountAndProductViewModel.kt b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrAmountAndProductViewModel.kt
+index 165d60b..7dd5095 100644
+--- a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrAmountAndProductViewModel.kt
++++ b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrAmountAndProductViewModel.kt
+@@ -1,2 +1,67 @@
+ package com.pagonxt.sdk.uxal.brazil.viewmodel
+ 
++import androidx.lifecycle.ViewModel
++import androidx.lifecycle.viewModelScope
++import com.pagonxt.sdk.brazil.payment.domain.models.BrSaleMethod
++import com.pagonxt.sdk.brazil.payment.domain.repository.BrTransactionRepository
++import com.pagonxt.sdk.core.presentation.mvi.BaseMviViewModel
++import com.pagonxt.sdk.core.presentation.mvi.MviContract
++import com.pagonxt.sdk.uxal.brazil.screens.amountandproduct.BrAmountAndProductViewEffect
++import com.pagonxt.sdk.uxal.brazil.screens.amountandproduct.BrAmountAndProductViewEvent
++import com.pagonxt.sdk.uxal.brazil.screens.amountandproduct.BrAmountAndProductViewState
++import com.pagonxt.sdk.uxal.ui_common.utils.toCurrencyString
++import com.pagonxt.sdk.uxal.brazil.utils.BRAZIL_LOCALE
++import kotlinx.coroutines.flow.MutableSharedFlow
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.SharedFlow
++import kotlinx.coroutines.flow.SharingStarted
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.asSharedFlow
++import kotlinx.coroutines.flow.combine
++import kotlinx.coroutines.flow.stateIn
++import kotlinx.coroutines.launch
++
++class BrAmountAndProductViewModel(
++    private val repository: BrTransactionRepository
++) : BaseMviViewModel<BrAmountAndProductViewEvent, BrAmountAndProductViewState, BrAmountAndProductViewEffect>() {
++
++    private val _uiStateFlow = MutableStateFlow(BrAmountAndProductViewState())
++
++    private val _effects = MutableSharedFlow<BrAmountAndProductViewEffect>()
++    override val effects: SharedFlow<BrAmountAndProductViewEffect> = _effects.asSharedFlow()
++
++    override val state: StateFlow<BrAmountAndProductViewState> = combine(
++        _uiStateFlow,
++        repository.params
++    ) { uiState, params ->
++        uiState.copy(
++            formattedAmount = params.amountInCents.toCurrencyString(BRAZIL_LOCALE),
++            isAmountValid = params.amountInCents > 0
++        )
++    }.stateIn(
++        scope = viewModelScope,
++        started = SharingStarted.WhileSubscribed(5_000),
++        initialValue = BrAmountAndProductViewState()
++    )
++
++    override fun processEvent(event: BrAmountAndProductViewEvent) {
++        when (event) {
++            is BrAmountAndProductViewEvent.OnBackClicked -> handleBack()
++            is BrAmountAndProductViewEvent.OnPaymentMethodSelected -> handlePaymentMethod(event.method)
++        }
++    }
++
++    private fun handlePaymentMethod(method: BrSaleMethod) {
++        viewModelScope.launch {
++            repository.updatePaymentMethod(method)
++            repository.beginTransaction()
++            _effects.emit(BrAmountAndProductViewEffect.NavigateToNextStep("BrSdkRoutes.CardReading"))
++        }
++    }
++
++    private fun handleBack() {
++        viewModelScope.launch {
++            _effects.emit(BrAmountAndProductViewEffect.NavigateBack)
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrCardReadingViewModel.kt b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrCardReadingViewModel.kt
+index f2baaf2..8fb2934 100644
+--- a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrCardReadingViewModel.kt
++++ b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrCardReadingViewModel.kt
+@@ -1,120 +1,105 @@
+ package com.pagonxt.sdk.uxal.brazil.viewmodel
+ 
+-import android.hardware.camera2.CaptureResult
+ import androidx.lifecycle.ViewModel
+ import androidx.lifecycle.viewModelScope
+ import com.pagonxt.sdk.brazil.payment.domain.models.BrSaleMethod
+ import com.pagonxt.sdk.brazil.payment.domain.repository.BrTransactionRepository
++import com.pagonxt.sdk.brazil.payment.domain.usecases.BrRequestCardCaptureUseCase
++import com.pagonxt.sdk.brazil.payment.domain.usecases.CardCaptureResult
++import com.pagonxt.sdk.core.presentation.mvi.BaseMviViewModel
++import com.pagonxt.sdk.core.presentation.mvi.MviContract
+ import com.pagonxt.sdk.uxal.brazil.screens.cardreading.BrCardReadingViewEffect
+ import com.pagonxt.sdk.uxal.brazil.screens.cardreading.BrCardReadingViewEvent
+ import com.pagonxt.sdk.uxal.brazil.screens.cardreading.BrCardReadingViewState
++import com.pagonxt.sdk.uxal.brazil.utils.BRAZIL_LOCALE
++import com.pagonxt.sdk.uxal.ui_common.utils.toCurrencyString
++import kotlinx.coroutines.flow.MutableSharedFlow
+ import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.SharedFlow
+ import kotlinx.coroutines.flow.SharingStarted
+ import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.asSharedFlow
+ import kotlinx.coroutines.flow.combine
+ import kotlinx.coroutines.flow.stateIn
+ import kotlinx.coroutines.flow.update
+ import kotlinx.coroutines.launch
+ 
+-/**
+- * Presentation layer ViewModel.
+- * Orchestrates the UI state by combining the local UI state with the pure Domain Repository.
+- */
+ class BrCardReadingViewModel(
+-    private val repository: BrTransactionRepository,
+-    private val requestCardCaptureUseCase: RequestCardCaptureUseCase
+-) : ViewModel() {
++    repository: BrTransactionRepository,
++    private val requestCardCaptureUseCase: BrRequestCardCaptureUseCase
++) : BaseMviViewModel<BrCardReadingViewEvent, BrCardReadingViewState, BrCardReadingViewEffect>() {
+ 
+-    // Ephemeral UI state (errors, loading, effects)
+-    private val _uiStateFlow = MutableStateFlow(BrCardReadingViewState())
++    private val _viewState = MutableStateFlow(BrCardReadingViewState())
+ 
+-    // The Reactive MVI StateFlow
+-    val viewStateFlow: StateFlow<BrCardReadingViewState> = combine(
+-        _uiStateFlow,
++    private val _effects = MutableSharedFlow<BrCardReadingViewEffect>()
++    override val effects: SharedFlow<BrCardReadingViewEffect> = _effects.asSharedFlow()
++
++    override val state: StateFlow<BrCardReadingViewState> = combine(
++        _viewState,
+         repository.currentTransaction
+     ) { uiState, transaction ->
+-
+         val isAmountValid = (transaction?.amountInCents ?: 0) > 0
+-
+         uiState.copy(
+             showHeader = isAmountValid,
+-            // Format amounts and map domain objects to strings here, keeping the UI dumb
+-            amountFormatted = formatCurrency(transaction?.amountInCents ?: 0),
++            amountFormatted = (transaction?.amountInCents ?: 0).toCurrencyString(BRAZIL_LOCALE),
+             paymentMethodName = mapPaymentMethodName(transaction?.params?.paymentMethod),
+-            instructionMessage = if (uiState.isLoading) "Processando..." else "Aproxime, insira ou passe seu cartão",
++            instructionMessage = if (uiState.isLoading) "Processing..." else "Tap, insert, or swipe your card.",
+         )
+     }.stateIn(
+         scope = viewModelScope,
+-        started = SharingStarted.Companion.WhileSubscribed(5_000),
++        started = SharingStarted.WhileSubscribed(5_000),
+         initialValue = BrCardReadingViewState()
+     )
+ 
+     init {
+-        // Automatically request card reading when the screen is opened
+         startCardReading()
+     }
+ 
+-    fun processEvent(event: BrCardReadingViewEvent) {
++    override fun processEvent(event: BrCardReadingViewEvent) {
+         when (event) {
+             is BrCardReadingViewEvent.OnCancelClicked -> handleCancel()
+-            is BrCardReadingViewEvent.ConsumeEffect -> _uiStateFlow.update { it.copy(viewEffect = null) }
++            BrCardReadingViewEvent.ConsumeEffect -> {
++            }
+         }
+     }
+ 
+     private fun startCardReading() {
+-        if (_uiStateFlow.value.isLoading) return
++        if (_viewState.value.isLoading) return
+ 
+         viewModelScope.launch {
+-            _uiStateFlow.update { it.copy(isLoading = true, errorMessage = null) }
+-
+-            // Trigger the pure Domain Command (Hardware HAL is executed here) [cite: 415, 416]
+-            val result = requestCardCaptureUseCase()
++            _viewState.update { it.copy(isLoading = true, errorMessage = null) }
+ 
+-            when (result) {
+-                is CaptureResult.Success -> {
+-                    _uiStateFlow.update {
+-                        it.copy(
+-                            isLoading = false,
+-                            viewEffect = BrCardReadingViewEffect.NavigateToNextStep("Routes.EmvProcessing")
+-                        )
+-                    }
++            when (val result = requestCardCaptureUseCase()) {
++                is CardCaptureResult.Success -> {
++                    _viewState.update { it.copy(isLoading = false) }
++                    _effects.emit(BrCardReadingViewEffect.NavigateToNextStep("Routes.EmvProcessing"))
+                 }
+-                is CaptureResult.HardwareError -> {
+-                    _uiStateFlow.update {
+-                        it.copy(isLoading = false, errorMessage = "Falha no leitor: ${result.code}")
+-                    }
++                is CardCaptureResult.HardwareError -> {
++                    _viewState.update { it.copy(isLoading = false, errorMessage = "Failed to read card: ${result.code}") }
+                 }
+-                is CaptureResult.InvalidAmount -> {
+-                    _uiStateFlow.update {
+-                        it.copy(isLoading = false, errorMessage = "Valor inválido para captura.")
+-                    }
++                is CardCaptureResult.InvalidAmount -> {
++                    _viewState.update { it.copy(isLoading = false, errorMessage = "Amount is invalid.") }
+                 }
+-                is CaptureResult.HaltedByInterceptor -> {
+-                    _uiStateFlow.update {
+-                        it.copy(isLoading = false, errorMessage = "Operação bloqueada: ${result.reason}")
+-                    }
++
++                is CardCaptureResult.HaltedByInterceptor -> {
++                    // Exemplo com interceptor (se o seu use case tiver)
+                 }
+             }
+         }
+     }
+ 
+     private fun handleCancel() {
+-        // Maybe we should not have this here to avoid cancel in the middle of card reading
+-        _uiStateFlow.update { it.copy(viewEffect = BrCardReadingViewEffect.NavigateBack) }
+-    }
+-
+-
+-    // Só um exemplo, vamos usar uma engine pra fazer formatter de currency
+-    private fun formatCurrency(cents: Long): String {
+-        return "R$ ${cents / 100.0}"
++        viewModelScope.launch {
++            _effects.emit(BrCardReadingViewEffect.NavigateBack)
++        }
+     }
+ 
+     private fun mapPaymentMethodName(method: BrSaleMethod?): String {
+         return when (method) {
+-            is BrSaleMethod.CreditCard -> "Crédito"
+-            is BrSaleMethod.DebitCard -> "Débito"
++            is BrSaleMethod.CreditCard -> "Credit"
++            is BrSaleMethod.DebitCard -> "Debit"
+             is BrSaleMethod.Voucher -> "Voucher"
+-            is BrSaleMethod.Pix -> "Pix"
++            is BrSaleMethod.Pix -> "PIX"
+             else -> ""
+         }
+     }
+diff --git a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrPaymentSuccessViewModel.kt b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrPaymentSuccessViewModel.kt
+index 165d60b..a00f29f 100644
+--- a/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrPaymentSuccessViewModel.kt
++++ b/sdk/uxal/brazil/src/main/java/com/pagonxt/sdk/uxal/brazil/viewmodel/BrPaymentSuccessViewModel.kt
+@@ -1,2 +1,69 @@
+ package com.pagonxt.sdk.uxal.brazil.viewmodel
+ 
++import androidx.lifecycle.ViewModel
++import androidx.lifecycle.viewModelScope
++import com.pagonxt.sdk.brazil.payment.domain.models.BrSaleMethod
++import com.pagonxt.sdk.brazil.payment.domain.repository.BrTransactionRepository
++import com.pagonxt.sdk.core.presentation.mvi.BaseMviViewModel
++import com.pagonxt.sdk.core.presentation.mvi.MviContract
++import com.pagonxt.sdk.uxal.brazil.screens.paymentsuccess.BrPaymentSuccessViewEffect
++import com.pagonxt.sdk.uxal.brazil.screens.paymentsuccess.BrPaymentSuccessViewEvent
++import com.pagonxt.sdk.uxal.brazil.screens.paymentsuccess.BrPaymentSuccessViewState
++import com.pagonxt.sdk.uxal.ui_common.utils.toCurrencyString
++import com.pagonxt.sdk.uxal.brazil.utils.BRAZIL_LOCALE
++import kotlinx.coroutines.flow.MutableSharedFlow
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.SharedFlow
++import kotlinx.coroutines.flow.SharingStarted
++import kotlinx.coroutines.flow.StateFlow
++import kotlinx.coroutines.flow.asSharedFlow
++import kotlinx.coroutines.flow.combine
++import kotlinx.coroutines.flow.stateIn
++import kotlinx.coroutines.launch
++
++class BrPaymentSuccessViewModel(
++    private val repository: BrTransactionRepository
++) : BaseMviViewModel<BrPaymentSuccessViewEvent, BrPaymentSuccessViewState, BrPaymentSuccessViewEffect>() {
++
++    private val _uiStateFlow = MutableStateFlow(BrPaymentSuccessViewState())
++
++    private val _effects = MutableSharedFlow<BrPaymentSuccessViewEffect>()
++    override val effects: SharedFlow<BrPaymentSuccessViewEffect> = _effects.asSharedFlow()
++
++    override val state: StateFlow<BrPaymentSuccessViewState> = combine(
++        _uiStateFlow,
++        repository.currentTransaction
++    ) { uiState, transaction ->
++        uiState.copy(
++            formattedAmount = (transaction?.amountInCents ?: 0).toCurrencyString(BRAZIL_LOCALE),
++            paymentMethodName = mapPaymentMethodName(transaction?.params?.paymentMethod)
++        )
++    }.stateIn(
++        scope = viewModelScope,
++        started = SharingStarted.WhileSubscribed(5_000),
++        initialValue = BrPaymentSuccessViewState()
++    )
++
++    override fun processEvent(event: BrPaymentSuccessViewEvent) {
++        when (event) {
++            is BrPaymentSuccessViewEvent.OnFinishClicked -> handleFinish()
++        }
++    }
++
++    private fun handleFinish() {
++        viewModelScope.launch {
++            repository.clearTransaction()
++            _effects.emit(BrPaymentSuccessViewEffect.NavigateToHome)
++        }
++    }
++
++    private fun mapPaymentMethodName(method: BrSaleMethod?): String {
++        return when (method) {
++            is BrSaleMethod.CreditCard -> "Credit"
++            is BrSaleMethod.DebitCard -> "Debit"
++            is BrSaleMethod.Voucher -> "Voucher"
++            is BrSaleMethod.Pix -> "Pix"
++            else -> "Unknown"
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/sdk/uxal/build.gradle.kts b/sdk/uxal/build.gradle.kts
+deleted file mode 100644
+index fcfcfeb..0000000
+--- a/sdk/uxal/build.gradle.kts
++++ /dev/null
+@@ -1,62 +0,0 @@
+-plugins {
+-    alias(libs.plugins.android.library)
+-    alias(libs.plugins.kotlin.android)
+-    alias(libs.plugins.maven.publish)
+-}
+-
+-kotlin {
+-    jvmToolchain(rootProject.extra["jvmToolchainVersion"] as Int)
+-}
+-
+-android {
+-    namespace = "com.pagonxt.sdk.uxal"
+-    compileSdk {
+-        version = release(36)
+-    }
+-
+-    defaultConfig {
+-        minSdk = 26
+-
+-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+-        consumerProguardFiles("consumer-rules.pro")
+-    }
+-
+-    buildTypes {
+-        release {
+-            isMinifyEnabled = false
+-            proguardFiles(
+-                getDefaultProguardFile("proguard-android-optimize.txt"),
+-                "proguard-rules.pro"
+-            )
+-        }
+-    }
+-
+-    publishing {
+-        singleVariant("release") {
+-            withJavadocJar()
+-        }
+-    }
+-}
+-
+-afterEvaluate {
+-    publishing {
+-        publications {
+-            create<MavenPublication>("release") {
+-                from(components["release"])
+-
+-                groupId = "com.pagonxt.sdk"
+-                artifactId = "pagonxt-sdk-uxal"
+-                version = "1.0.0-SNAPSHOT"
+-            }
+-        }
+-    }
+-}
+-
+-dependencies {
+-    implementation(libs.androidx.core.ktx)
+-    implementation(libs.androidx.appcompat)
+-    implementation(libs.material)
+-    testImplementation(libs.junit)
+-    androidTestImplementation(libs.androidx.junit)
+-    androidTestImplementation(libs.androidx.espresso.core)
+-}
+\ No newline at end of file
+diff --git a/sdk/uxal/consumer-rules.pro b/sdk/uxal/consumer-rules.pro
+deleted file mode 100644
+index e69de29..0000000
+diff --git a/sdk/uxal/core/.gitignore b/sdk/uxal/core/.gitignore
+deleted file mode 100644
+index 42afabf..0000000
+--- a/sdk/uxal/core/.gitignore
++++ /dev/null
+@@ -1 +0,0 @@
+-/build
+\ No newline at end of file
+diff --git a/sdk/uxal/core/build.gradle.kts b/sdk/uxal/core/build.gradle.kts
+deleted file mode 100644
+index 5b43817..0000000
+--- a/sdk/uxal/core/build.gradle.kts
++++ /dev/null
+@@ -1,61 +0,0 @@
+-plugins {
+-    alias(libs.plugins.android.library)
+-    alias(libs.plugins.kotlin.android)
+-    alias(libs.plugins.kotlin.compose)
+-    alias(libs.plugins.maven.publish)
+-}
+-
+-kotlin {
+-    jvmToolchain(rootProject.extra["jvmToolchainVersion"] as Int)
+-}
+-
+-android {
+-    namespace = "com.pagonxt.sdk.uxal.core"
+-    compileSdk {
+-        version = release(36)
+-    }
+-
+-    defaultConfig {
+-        minSdk = 26
+-
+-        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+-        consumerProguardFiles("consumer-rules.pro")
+-    }
+-
+-    buildTypes {
+-        release {
+-            isMinifyEnabled = false
+-            proguardFiles(
+-                getDefaultProguardFile("proguard-android-optimize.txt"),
+-                "proguard-rules.pro"
+-            )
+-        }
+-    }
+-
+-    publishing {
+-        singleVariant("release") {
+-            withSourcesJar()
+-            withJavadocJar()
+-        }
+-    }
+-}
+-
+-afterEvaluate {
+-    publishing {
+-        publications {
+-            create<MavenPublication>("release") {
+-                from(components["release"])
+-
+-                groupId = "com.pagonxt.sdk"
+-                artifactId = "pagonxt-sdk-uxal-core"
+-                version = "1.0.0-SNAPSHOT"
+-            }
+-        }
+-    }
+-}
+-
+-dependencies {
+-    implementation(project(":sdk:core"))
+-    implementation(platform(libs.androidx.compose.bom))
+-    implementation(libs.androidx.compose.runtime)
+-}
+diff --git a/sdk/uxal/proguard-rules.pro b/sdk/uxal/proguard-rules.pro
+deleted file mode 100644
+index 481bb43..0000000
+--- a/sdk/uxal/proguard-rules.pro
++++ /dev/null
+@@ -1,21 +0,0 @@
+-# Add project specific ProGuard rules here.
+-# You can control the set of applied configuration files using the
+-# proguardFiles setting in build.gradle.
+-#
+-# For more details, see
+-#   http://developer.android.com/guide/developing/tools/proguard.html
+-
+-# If your project uses WebView with JS, uncomment the following
+-# and specify the fully qualified class name to the JavaScript interface
+-# class:
+-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
+-#   public *;
+-#}
+-
+-# Uncomment this to preserve the line number information for
+-# debugging stack traces.
+-#-keepattributes SourceFile,LineNumberTable
+-
+-# If you keep the line number information, uncomment this to
+-# hide the original source file name.
+-#-renamesourcefileattribute SourceFile
+\ No newline at end of file
+diff --git a/sdk/uxal/ui-common/build.gradle.kts b/sdk/uxal/ui-common/build.gradle.kts
+index 860aef4..9e2fac2 100644
+--- a/sdk/uxal/ui-common/build.gradle.kts
++++ b/sdk/uxal/ui-common/build.gradle.kts
+@@ -59,7 +59,6 @@ afterEvaluate {
+ 
+ dependencies {
+     implementation(project(":sdk:core"))
+-    implementation(project(":sdk:uxal:core"))
+     implementation(platform(libs.androidx.compose.bom))
+     implementation(libs.androidx.core.ktx)
+     implementation(libs.androidx.appcompat)
+diff --git a/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/ErrorScreen.kt b/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/ErrorScreen.kt
+index 5ba3fd0..3bcf8b2 100644
+--- a/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/ErrorScreen.kt
++++ b/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/ErrorScreen.kt
+@@ -14,9 +14,12 @@ import androidx.compose.ui.unit.dp
+ @Composable
+ fun ErrorScreen(
+     errorCode: String,
+-    errorMessage: String? = null,
+-    onSecondaryAction: () -> Unit,
+-    onBack: () -> Unit
++    errorMessage: String,
++    title: String,
++    primaryButtonText: String,
++    secondaryButtonText: String? = null,
++    onPrimaryAction: () -> Unit,
++    onSecondaryAction: (() -> Unit)? = null
+ ) {
+     Surface(
+         modifier = Modifier.fillMaxSize(),
+@@ -25,23 +28,21 @@ fun ErrorScreen(
+         Column(
+             modifier = Modifier
+                 .fillMaxSize()
+-                .padding(24.dp), // Espaçamento das bordas
++                .padding(24.dp),
+             horizontalAlignment = Alignment.CenterHorizontally,
+             verticalArrangement = Arrangement.Center
+         ) {
+-            // 1. Ícone de Erro
+             Icon(
+                 imageVector = Icons.Rounded.Warning,
+-                contentDescription = "Ícone de Alerta",
++                contentDescription = null,
+                 modifier = Modifier.size(80.dp),
+                 tint = MaterialTheme.colorScheme.error
+             )
+ 
+             Spacer(modifier = Modifier.height(24.dp))
+ 
+-            // 2. Título Genérico
+             Text(
+-                text = "Ops! Algo deu errado.",
++                text = title,
+                 style = MaterialTheme.typography.headlineMedium,
+                 color = MaterialTheme.colorScheme.onBackground,
+                 textAlign = TextAlign.Center
+@@ -49,9 +50,8 @@ fun ErrorScreen(
+ 
+             Spacer(modifier = Modifier.height(8.dp))
+ 
+-            // 3. Mensagem de Erro (Opcional)
+             Text(
+-                text = errorMessage ?: "Ocorreu um erro inesperado. Por favor, tente novamente.",
++                text = errorMessage,
+                 style = MaterialTheme.typography.bodyLarge,
+                 color = MaterialTheme.colorScheme.onSurfaceVariant,
+                 textAlign = TextAlign.Center
+@@ -59,7 +59,6 @@ fun ErrorScreen(
+ 
+             Spacer(modifier = Modifier.height(32.dp))
+ 
+-            // 4. Código do Erro (Estilo técnico)
+             Surface(
+                 shape = MaterialTheme.shapes.small,
+                 color = MaterialTheme.colorScheme.surfaceVariant,
+@@ -74,39 +73,23 @@ fun ErrorScreen(
+                 )
+             }
+ 
+-            if (errorCode.contains("401")) {
+-                Button(
++            if (secondaryButtonText != null && onSecondaryAction != null) {
++                OutlinedButton(
+                     onClick = onSecondaryAction,
+                     shape = MaterialTheme.shapes.medium,
+-                    modifier = Modifier.fillMaxWidth(0.6f) // Ocupa 60% da largura
++                    modifier = Modifier.fillMaxWidth(0.8f).padding(bottom = 8.dp)
+                 ) {
+-                    Text(text = "Tentar novamente")
+-                }
+-            } else {
+-                // 5. Botão de Ação
+-                Button(
+-                    onClick = onBack,
+-                    shape = MaterialTheme.shapes.medium,
+-                    modifier = Modifier.fillMaxWidth(0.6f) // Ocupa 60% da largura
+-                ) {
+-                    Text(text = "Voltar")
++                    Text(text = secondaryButtonText)
+                 }
+             }
+-        }
+-    }
+-}
+ 
+-// --- Preview para testar visualização ---
+-
+-@Preview(showBackground = true)
+-@Composable
+-fun ErrorScreenPreview() {
+-    MaterialTheme {
+-        ErrorScreen(
+-            errorCode = "ERR-401",
+-            errorMessage = "Não foi possível conectar ao servidor. Verifique sua internet.",
+-            onSecondaryAction = {},
+-            onBack = {}
+-        )
++            Button(
++                onClick = onPrimaryAction,
++                shape = MaterialTheme.shapes.medium,
++                modifier = Modifier.fillMaxWidth(0.8f)
++            ) {
++                Text(text = primaryButtonText)
++            }
++        }
+     }
+ }
+\ No newline at end of file
+diff --git a/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/Keypad.kt b/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/Keypad.kt
+index 3d638b2..1c8e342 100644
+--- a/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/Keypad.kt
++++ b/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/Keypad.kt
+@@ -2,22 +2,14 @@ package com.pagonxt.sdk.uxal.ui_common.components
+ 
+ import androidx.compose.foundation.border
+ import androidx.compose.foundation.clickable
+-import androidx.compose.foundation.layout.Box
+-import androidx.compose.foundation.layout.Column
+-import androidx.compose.foundation.layout.fillMaxSize
+-import androidx.compose.foundation.layout.fillMaxWidth
+-import androidx.compose.foundation.layout.height
+-import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.layout.*
+ import androidx.compose.foundation.lazy.grid.GridCells
+ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+ import androidx.compose.foundation.lazy.grid.items
+ import androidx.compose.foundation.shape.RoundedCornerShape
+-import androidx.compose.material3.Card
+-import androidx.compose.material3.CardDefaults
+-import androidx.compose.material3.Icon
+-import androidx.compose.material3.MaterialTheme
+-import androidx.compose.material3.Scaffold
+-import androidx.compose.material3.Text
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.automirrored.outlined.Backspace
++import androidx.compose.material3.*
+ import androidx.compose.runtime.Composable
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+@@ -28,20 +20,23 @@ import androidx.compose.ui.tooling.preview.Preview
+ import androidx.compose.ui.unit.dp
+ import androidx.compose.ui.unit.sp
+ 
++sealed interface KeypadEvent {
++    data class Digit(val number: Int) : KeypadEvent
++    data object Backspace : KeypadEvent
++    data object CustomAction : KeypadEvent
++}
+ 
+-enum class KeyType { Number, Action }
+-
+-data class KeypadKey<T>(
+-    val label: T,
+-    val description: String? = null,
+-    val type: KeyType = KeyType.Number,
+-    val drawColor: Color = Color.Black,
+-    val icon: ImageVector? = null
++data class ActionKeyConfig(
++    val icon: ImageVector? = null,
++    val label: String? = null,
++    val color: Color = Color.Black
+ )
+ 
+ @Composable
+ fun Keypad(
+-    onKeyClick: (KeypadKey<*>) -> Unit, action1: KeypadKey<*>? = null, action2: KeypadKey<*>? = null
++    onKeyClick: (KeypadEvent) -> Unit,
++    leftActionConfig: ActionKeyConfig? = null,
++    rightActionConfig: ActionKeyConfig? = ActionKeyConfig(icon = Icons.AutoMirrored.Outlined.Backspace)
+ ) {
+     Card(
+         colors = CardDefaults.cardColors(containerColor = Color.White),
+@@ -50,18 +45,10 @@ fun Keypad(
+         modifier = Modifier.fillMaxWidth()
+     ) {
+         val keys = listOf(
+-            KeypadKey(1),
+-            KeypadKey(2),
+-            KeypadKey(3),
+-            KeypadKey(4),
+-            KeypadKey(5),
+-            KeypadKey(6),
+-            KeypadKey(7),
+-            KeypadKey(8),
+-            KeypadKey(9),
+-            action1 ?: KeypadKey("??"),
+-            KeypadKey(0),
+-            action2 ?: KeypadKey("??")
++            KeypadEvent.Digit(1), KeypadEvent.Digit(2), KeypadEvent.Digit(3),
++            KeypadEvent.Digit(4), KeypadEvent.Digit(5), KeypadEvent.Digit(6),
++            KeypadEvent.Digit(7), KeypadEvent.Digit(8), KeypadEvent.Digit(9),
++            leftActionConfig, KeypadEvent.Digit(0), rightActionConfig
+         )
+ 
+         LazyVerticalGrid(
+@@ -70,30 +57,51 @@ fun Keypad(
+                 .height(300.dp)
+                 .border(0.5.dp, Color(0xFFCBCBCB))
+         ) {
+-            items(keys) { key ->
++            items(keys) { keyItem ->
+                 Box(
+                     modifier = Modifier
+                         .height(75.dp)
+                         .border(width = 0.5.dp, color = Color(0xFFCBCBCB))
+-                        .clickable {
+-                            onKeyClick(key)
++                        .clickable(enabled = keyItem != null) {
++                            when (keyItem) {
++                                is KeypadEvent -> onKeyClick(keyItem)
++                                is ActionKeyConfig -> {
++                                    if (keyItem.icon == Icons.AutoMirrored.Outlined.Backspace) {
++                                        onKeyClick(KeypadEvent.Backspace)
++                                    } else {
++                                        onKeyClick(KeypadEvent.CustomAction)
++                                    }
++                                }
++                            }
+                         },
+                     contentAlignment = Alignment.Center
+                 ) {
+-                    if (key.icon != null) {
+-                        Icon(
+-                            imageVector = key.icon,
+-                            contentDescription = key.label.toString(),
+-                            tint = key.drawColor,
+-                            modifier = Modifier.height(28.dp)
+-                        )
+-                    } else {
+-                        Text(
+-                            text = key.label.toString(),
+-                            fontSize = 28.sp,
+-                            color = key.drawColor,
+-                            fontWeight = FontWeight.Normal
+-                        )
++                    when (keyItem) {
++                        is KeypadEvent.Digit -> {
++                            Text(
++                                text = keyItem.number.toString(),
++                                fontSize = 28.sp,
++                                color = Color.Black,
++                                fontWeight = FontWeight.Normal
++                            )
++                        }
++                        is ActionKeyConfig -> {
++                            if (keyItem.icon != null) {
++                                Icon(
++                                    imageVector = keyItem.icon,
++                                    contentDescription = keyItem.label,
++                                    tint = keyItem.color,
++                                    modifier = Modifier.height(28.dp)
++                                )
++                            } else if (keyItem.label != null) {
++                                Text(
++                                    text = keyItem.label,
++                                    fontSize = 20.sp,
++                                    color = keyItem.color,
++                                    fontWeight = FontWeight.Bold
++                                )
++                            }
++                        }
+                     }
+                 }
+             }
+@@ -101,21 +109,10 @@ fun Keypad(
+     }
+ }
+ 
+-@Preview(showBackground = true, heightDp = 800)
++@Preview(showBackground = true)
+ @Composable
+-fun PreviewSalesScreen() {
++private fun PreviewKeypad() {
+     MaterialTheme {
+-        Scaffold { paddingValues ->
+-            Column(
+-                modifier = Modifier
+-                    .padding(paddingValues)
+-                    .fillMaxSize(),
+-                horizontalAlignment = Alignment.CenterHorizontally
+-            ) {
+-                Box {
+-                    Keypad(onKeyClick = { })
+-                }
+-            }
+-        }
++        Keypad(onKeyClick = {})
+     }
+ }
+\ No newline at end of file
+diff --git a/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/LoadingScreen.kt b/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/LoadingScreen.kt
+index d358fb2..738641d 100644
+--- a/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/LoadingScreen.kt
++++ b/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/components/LoadingScreen.kt
+@@ -1,17 +1,11 @@
+ package com.pagonxt.sdk.uxal.ui_common.components
+ 
+-import androidx.compose.foundation.layout.Box
+-import androidx.compose.foundation.layout.Column
+-import androidx.compose.foundation.layout.fillMaxSize
+-import androidx.compose.foundation.layout.padding
+-import androidx.compose.material3.CircularProgressIndicator
+-import androidx.compose.material3.MaterialTheme
+-import androidx.compose.material3.Surface
+-import androidx.compose.material3.Text
++import androidx.compose.foundation.layout.*
++import androidx.compose.material3.*
+ import androidx.compose.runtime.Composable
+ import androidx.compose.ui.Alignment
+ import androidx.compose.ui.Modifier
+-import androidx.compose.ui.tooling.preview.Preview
++import androidx.compose.ui.text.style.TextAlign
+ import androidx.compose.ui.unit.dp
+ 
+ @Composable
+@@ -20,32 +14,27 @@ fun LoadingScreen(message: String? = null) {
+         modifier = Modifier.fillMaxSize(),
+         color = MaterialTheme.colorScheme.background
+     ) {
+-        Box(
++        Column(
+             modifier = Modifier
+                 .fillMaxSize()
+-                .padding(16.dp),
+-            contentAlignment = Alignment.Center,
++                .padding(32.dp),
++            horizontalAlignment = Alignment.CenterHorizontally,
++            verticalArrangement = Arrangement.Center
+         ) {
+-            Column(
+-                horizontalAlignment = Alignment.CenterHorizontally,
+-            ) {
+-                CircularProgressIndicator()
+-                if (message != null) {
+-                    Text(
+-                        text = message,
+-                        style = MaterialTheme.typography.bodyMedium,
+-                        modifier = Modifier.align(Alignment.CenterHorizontally)
+-                    )
+-                }
++            CircularProgressIndicator(
++                color = MaterialTheme.colorScheme.primary,
++                modifier = Modifier.size(48.dp)
++            )
++
++            if (!message.isNullOrBlank()) {
++                Spacer(modifier = Modifier.height(24.dp))
++                Text(
++                    text = message,
++                    style = MaterialTheme.typography.bodyLarge,
++                    color = MaterialTheme.colorScheme.onBackground,
++                    textAlign = TextAlign.Center
++                )
+             }
+         }
+     }
+-}
+-
+-@Preview(showBackground = true, showSystemUi = true)
+-@Composable
+-fun PreviewLoadingScreen() {
+-    MaterialTheme {
+-        LoadingScreen("Loading, please wait...")
+-    }
+ }
+\ No newline at end of file
+diff --git a/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/utils/Currency.kt b/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/utils/Currency.kt
+index 805d3b8..89a9614 100644
+--- a/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/utils/Currency.kt
++++ b/sdk/uxal/ui-common/src/main/java/com/pagonxt/sdk/uxal/ui_common/utils/Currency.kt
+@@ -6,83 +6,34 @@ import java.util.Currency
+ import java.util.Locale
+ 
+ /**
+- * Utility class for currency-related operations.
++ * Returns the currency symbol for the native locale.
+  */
+-object CurrencyUtils {
+-    /**
+-     * Returns the currency symbol for the given locale.
+-     *
+-     * @param locale The locale for which to retrieve the currency symbol.
+-     */
+-    fun getSymbol(locale: Locale): String {
+-        val currency = Currency.getInstance(locale)
+-        return currency.getSymbol(locale)
+-    }
+-
+-    /**
+-     * Returns the currency code (ISO 4217) for the given locale.
+-     *
+-     * @param locale The locale for which to retrieve the currency code.
+-     */
+-    fun getCode(locale: Locale): String {
+-        return Currency.getInstance(locale).currencyCode
+-    }
+-
+-    /**
+-     * Returns the formatted value for the given locale.
+-     * Respect commas and points in the region.
+-     *
+-     * @param value The value to format.
+-     */
+-    fun getValue(value: BigDecimal, locale: Locale): String {
+-        val numberFormat = NumberFormat.getCurrencyInstance(locale)
+-        return numberFormat.format(value)
+-    }
+-
+-    /**
+-     * Returns the formatted value for the given locale.
+-     * Respect commas and points in the region.
+-     *
+-     * @param valueInCents The value to format in cents.
+-     */
+-    fun getValue(valueInCents: Long, locale: Locale): String {
+-        val numberFormat = NumberFormat.getCurrencyInstance(locale)
+-        val value = (valueInCents.toDouble() / 100).toBigDecimal()
+-        return numberFormat.format(value)
+-    }
+-
+-    /**
+-     * Returns the formatted value for the given locale.
+-     * Respect commas and points in the region, but without the symbol.
+-     *
+-     * @param value The value to format.
+-     */
+-    fun getValueOnly(value: BigDecimal, locale: Locale): String {
+-        val currency = Currency.getInstance(locale)
+-
+-        val numberFormat = NumberFormat.getInstance(locale)
++fun Locale.getCurrencySymbol(): String {
++    return Currency.getInstance(this).getSymbol(this)
++}
+ 
+-        numberFormat.minimumFractionDigits = currency.defaultFractionDigits
+-        numberFormat.maximumFractionDigits = currency.defaultFractionDigits
++/**
++ * Transforms a Cents (Long) currency value into formatted string
++ */
++fun Long.toCurrencyString(locale: Locale): String {
++    val numberFormat = NumberFormat.getCurrencyInstance(locale)
++    val value = (this.toDouble() / 100).toBigDecimal()
++    return numberFormat.format(value)
++}
+ 
+-        return numberFormat.format(value)
++/**
++ * Transforms Cents (Long) to String, ignoring currency symbol.
++ */
++fun Long.toAmountStringOnly(locale: Locale): String {
++    val currency = Currency.getInstance(locale)
++    val numberFormat = NumberFormat.getInstance(locale).apply {
++        minimumFractionDigits = currency.defaultFractionDigits
++        maximumFractionDigits = currency.defaultFractionDigits
+     }
++    val value = (this.toDouble() / 100).toBigDecimal()
++    return numberFormat.format(value)
++}
+ 
+-    /**
+-     * Returns the formatted value for the given locale.
+-     * Respect commas and points in the region, but without the symbol.
+-     *
+-     * @param valueInCents The value to format in cents.
+-     */
+-    fun getValueOnly(valueInCents: Long, locale: Locale): String {
+-        val currency = Currency.getInstance(locale)
+-        val numberFormat = NumberFormat.getInstance(locale)
+-
+-        numberFormat.minimumFractionDigits = currency.defaultFractionDigits
+-        numberFormat.maximumFractionDigits = currency.defaultFractionDigits
+-
+-        val value = (valueInCents.toDouble() / 100).toBigDecimal()
+-
+-        return numberFormat.format(value)
+-    }
++fun BigDecimal.toCurrencyString(locale: Locale): String {
++    return NumberFormat.getCurrencyInstance(locale).format(this)
+ }
+\ No newline at end of file
+diff --git a/settings.gradle.kts b/settings.gradle.kts
+index cbba5a0..f5254b2 100644
+--- a/settings.gradle.kts
++++ b/settings.gradle.kts
+@@ -34,20 +34,16 @@ dependencyResolutionManagement {
+ rootProject.name = "Payment App"
+ include(":sdk")
+ include(":sdk:core")
+-include(":sdk:payment")
+ include(":sdk:hal")
+ include(":sdk:hal:middleware")
+-include(":sdk:payment:brazil")
+ include(":sdk:uxal")
+ include(":sdk:uxal:ui-common")
+-include(":sdk:uxal:core")
+ include(":sdk:uxal:brazil")
+-include(":sdk:payment:argentina")
+ include(":sdk:uxal:argentina")
+-include(":app-brazil")
+ include(":app-argentina")
+-include(":sdk:payment:core")
+ include(":sdk:hal:brazil")
+ include(":sdk:hal:argentina")
+ include(":sdk:hal:core")
++include(":sdk:common-utils")
+ include(":sdk:brazil")
++include(":app-brazil")
